@@ -9,7 +9,8 @@ import tempfile
 import shutil
 import errno
 import time
-from reparametrization import *
+from .reparametrization import *
+
 
 def parse_line(tokens):
     #print(tokens)
@@ -36,9 +37,11 @@ def parse_line(tokens):
                 dims.append(dim)
     return values, dims
 
+
 class _Universe(object):
     def __contains__(self, key):
         return True
+
 
 def load_colvar(fname, selection=None):
     rows = []
@@ -50,28 +53,33 @@ def load_colvar(fname, selection=None):
             else:
                 values, dims = parse_line(tokens)
                 rows.append(values)
-    assert len(var_names)==len(dims)
-    assert len(rows[0])==sum(dims)
-    rows = np.array(rows)
+    assert len(var_names) == len(dims)
+    assert len(rows[0]) == sum(dims)
+    data = np.array(rows)
+
+    if selection is None:
+        selection = _Universe()
+    elif isinstance(selection, str):
+        selection = [selection]
 
     # convert to structured array
-    if selection is None:
-        selection =  _Universe()
-
     dtype_def = []
     for name, dim in zip(var_names, dims):
         if name in selection:
-            if dim==1:
-                dtype_def.append((name, np.float64))
+            if dim == 1:
+                dtype_def.append((name, np.float64, 1))
             else:
                 dtype_def.append((name, np.float64, dim))
     dtype = np.dtype(dtype_def)
-    array = np.zeros(len(rows), dtype=dtype)
-    name_by_col = ...
-    offset_by_col = ...
-    for i_col, col in enumerate(rows.T):
-        array[name_by_col[i_col]][:, offset_by_col[i_col]] = col
-    return array
+
+    indices = np.concatenate(([0], np.cumsum(dims)))
+    # print(dtype)
+    # print(indices)
+    colgroups = [np.squeeze(data[:, start:stop]) for name, start, stop in zip(var_names, indices[0:-1], indices[1:]) if
+                 name in selection]
+    # for c,n in zip(colgroups, dtype.names):
+    #    print(c.shape, n, dtype.fields[n][0].shape)
+    return np.core.records.fromarrays(colgroups, dtype=dtype)
 
 
 def mkdir(folder):
@@ -85,25 +93,25 @@ def mkdir(folder):
 def load_structured(config):
     dtype_def = []
     for name, value in config.items():
-        if isinstance(v, list):
+        if isinstance(value, list):
             dtype_def.append((name, np.float64, len(v)))
-        elif isinstance(v, float):
+        elif isinstance(value, float):
             dtype_def.append((name, np.float64))
         else:
             raise RuntimeError('unrecognized type')
     dtype = np.dtype(dtype_def)
     array = np.zeros(1, dtype=dtype)
     for name, value in config.items():
-        array['name'] = value
+        array[name] = value
     return array
 
 
 def dump_structured(array):
     config = {}
-    for n in a.dtype.names:
-        if len(a.dtype.fields[n][0].shape) == 1:  # vector type
+    for n in array.dtype.names:
+        if len(array.dtype.fields[n][0].shape) == 1:  # vector type
             config[n] = [float(x) for x in array[n]]
-        elif len(a.dtype.fields[n][0].shape) == 0:  # scalar type
+        elif len(array.dtype.fields[n][0].shape) == 0:  # scalar type
             config[n] = float(array[n])
         else:
             raise RuntimeError('unsupported dimension')
@@ -189,7 +197,7 @@ class Image(object):
 
     @property
     def propagated(self):
-        return os.path.exists(self.base + '.dcd') and os.path.exists(self.base + '.colvar.traj')
+        return os.path.exists(self.base + '.dcd') and os.path.exists(self.base + '.colvars.traj')
 
     def _make_job_file(self, env):
         'Created a submission script for the job on the local file system.'
@@ -311,7 +319,6 @@ class Image(object):
         return self
 
 
-
     def closest_replica(self, x):  # TODO: rewrite!!!
         # TODO: offer option to search for a replica that is closest to a given plane
         'Find the replica which is closest to x in order parameters space.'
@@ -321,13 +328,13 @@ class Image(object):
         return int(i), dist[i]
 
     def get_pcoords(self, selection=None):
-        return load_colvar(self.base + '.colvar.traj', selection=selection)
+        return load_colvar(self.base + '.colvars.traj', selection=selection)
 
     @property
     def pcoords(self):
         assert self.propagated
         if self._pcoords is None:
-            var_names, self._pcoords = load_colvar(self.base + '.colvar.traj')
+            var_names, self._pcoords = load_colvar(self.base + '.colvars.traj')
         return self._pcoords
 
     @property
@@ -384,9 +391,42 @@ class Image(object):
     def x0(self):
         if self._x0 is None:
             root = os.environ['STRING_SIM_ROOT']
-            path = self.previous_base + '.colvar.traj'
+            path = self.previous_base + '.colvars.traj'
             self._x0 = load_colvar(np.loadtxt(path))[self.previous_frame_number, :]
         return self._x0
+
+    @staticmethod
+    def u(x, c, k, T=303.15):
+
+        pot = np.zeros(x.shape[0])
+        for n in k.dtype.names:
+            pot += 0.5*k[n]*(x[n] - c[n])**2  # TODO: handle the case when x is a vector # TODO: correct units!!!
+        return pot
+
+    @staticmethod
+    def bar(x_a, c_a, k_a, x_b, c_b, k_b, T=303.15):
+        import pyemma
+        RT = 1.985877534E-3*T
+        btrajs = [np.zeros((x_a.shape[0], 2)), np.zeros((x_b.shape[0], 2))]
+        btrajs[0][:, 0] = Image.u(x_a, c_a, k_a)/RT
+        btrajs[0][:, 1] = Image.u(x_a, c_b, k_b)/RT
+        btrajs[1][:, 0] = Image.u(x_b, c_a, k_a)/RT
+        btrajs[1][:, 1] = Image.u(x_b, c_b, k_b)/RT
+        ttrajs = [np.zeros(x_a.shape[0], dtype=int), np.ones(x_b.shape[0], dtype=int)]
+        mbar = pyemma.thermo.MBAR()
+        mbar.estimate((ttrajs, ttrajs, btrajs))
+        return mbar.f_therm[0] - mbar.f_therm[1]
+        #return mbar.free_energies
+
+    def fel(self, other, method='bar', T=303.15):
+        assert method == 'bar'
+        #if not self.propagated:
+        #    raise RuntimeError('String not completely propagated. Can\'t compute free energies')
+        # TODO: concatenate all repeats
+        fields = self.spring.dtype.names
+        # assert all(fields == im_2.spring.dtype.names)  # FIXME
+        return Image.bar(x_a=self.get_pcoords(selection=fields), c_a=self.node, k_a=self.spring,
+                         x_b=other.get_pcoords(selection=fields), c_b=other.node,  k_b=other.spring, T=T)
 
 
 def load_jobs_PBS():
@@ -430,7 +470,10 @@ def get_queued_jobs():
     try:
         return get_queued_jobs_SLURM()
     except FileNotFoundError:
-        return get_queued_jobs_PBS()
+        try:
+            return get_queued_jobs_PBS()
+        except FileNotFoundError:
+            return None  #_Universe()
 
 class String(object):
     def __init__(self, branch, iteration, images, image_distance, previous):
@@ -485,6 +528,9 @@ class String(object):
             queued_jobs = []
         else:
             queued_jobs = get_queued_jobs()
+            if queued_jobs is None:
+                raise RuntimeError('queued jobs is undefined, I don\'t know which jobs are currently running. Giving up propagation.')
+
         #print('queued jobs', queued_jobs)
 
         l = len(self.images)
@@ -567,11 +613,13 @@ class String(object):
         rib = ''
         for image in self.images_ordered:
             if image.propagated:
-                rib += 'c'
+                rib += 'c'  # completed
+            elif queued_jobs is None:
+                rib += '?'
             elif image.submitted(queued_jobs):
-                rib += 's'
+                rib += 's'  # submitted
             else:
-                rib += '.'
+                rib += '.'  # not submitted, only defined
         return rib
 
     def write_yaml(self, backup=False):  # TODO: rename to save_status
@@ -670,26 +718,17 @@ class String(object):
     def overlap(self):
         return [p.overlap_plane(q) for p,q in zip(self.images_ordered[0:-1], self.images_ordered[1:])]
 
-    @staticmethod
-    def u(x, c, k):
 
-    @staticmethod
-    def bar(x_a, c_a, k_a, x_b, c_b, k_b):
-        # implement the pure numpy case now, leave more complicated stuff for later
-        # convert to pure numpy and use pyemma
-
-    def fel(self, method='bar'):
-        assert method=='bar'
-        if not self.propagated:
-            raise RuntimeError('String not completely propagated. Can\'t compute free energies')
-        f = np.zeros(len(self.images))
-        for i, (im_1, im_2) in enumerate(zip(self.images[0:-1], self.images[1:])):
-            fields = im_1.spring.dtype.names
-            assert all(fields == im_2.spring.dtype.names)  # FIXME
-            f[i] = bar(x_a=im_1.get_pcoords(fields), c_a=im_1.node[fields], x_b=im_2.get_pcoords(fields), c_b=im_2.node[fields], k_a=im_1.spring, k_b=im_2.spring)
-            # TODO: node[fields] ... what is the resulting type???
+    def fel(self, T=303.15):
+        f = np.zeros(len(self.images) - 1) + np.nan
+        for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
+            #if a.propagated and b.propagated:
+            try:
+                f[i] = a.fel(b, T=T)
+            except Exception as e:
+                pass
         return f
-        
+
         # TODO: implement simple overlap ... add selection of order parameters!
 
 
