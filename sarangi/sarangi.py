@@ -269,7 +269,7 @@ class Image(object):
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
         return env
 
-    def propagate(self, random_number, wait, queued_jobs, run_locally=False):
+    def propagate(self, random_number, wait, queued_jobs, run_locally=False, dry=False):
         'Generic propagation command. Submits jobs for the intermediate points. Copies the end points.'
         if self.propagated:
             #print(self.job_name, 'already completed')
@@ -302,20 +302,22 @@ class Image(object):
         else:  # normal (intermediate string point)
             if run_locally:
                 job_file = self._make_job_file(env)
-                print('would run', job_file, '(', self.job_name, ')')
-                subprocess.run('bash ' + job_file, shell=True)  # directly execute the job file
-                exit(0)
+                print('run', job_file, '(', self.job_name, ')')
+                if not dry:
+                    subprocess.run('bash ' + job_file, shell=True)  # directly execute the job file
             else:
                 job_file = self._make_job_file(env)
                 if wait:
                     command = 'qsub --wait ' + job_file
-                    print('would run', command, '(', self.job_name, ')')
-                    #subprocess.run(command, shell=True)  # debug
-                    # TODO: delete the job file
+                    print('run', command, '(', self.job_name, ')')
+                    if not dry:
+                        subprocess.run(command, shell=True)  # debug
+                        # TODO: delete the job file
                 else:
                     command = 'qsub ' + job_file
-                    print('would run', command, '(', self.job_name, ')')
-                    #subprocess.run(command, shell=True)  # debug
+                    print('run', command, '(', self.job_name, ')')
+                    if not dry:
+                        subprocess.run(command, shell=True)  # debug
 
         return self
 
@@ -529,7 +531,7 @@ class String(object):
         return image.propagate(random_number=random_number, wait=wait,
                                queued_jobs=queued_jobs, run_locally=run_locally)
 
-    def propagate(self, wait=False, run_locally=False):
+    def propagate(self, wait=False, run_locally=False, dry=False):
         '''Propagated the String (one iteration). Returns a modified copy.'''
         if self.propagated:
             return self  # TODO: warn???
@@ -554,7 +556,7 @@ class String(object):
         max_workers=1#l
 
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self._launch_simulation, image, np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0], wait, queued_jobs, run_locally)
+            futures = [executor.submit(self._launch_simulation, image, np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0], wait, queued_jobs, run_locally, dry)
                        for image in self.images_ordered]
             for future in concurrent.futures.as_completed(futures):
                 image = future.result()
@@ -751,12 +753,13 @@ def parse_commandline(argv=None):
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--wait', help='wait for job completion', default=False, action='store_true')
+    parser.add_argument('--dry', help='dry run', default=False, action='store_true')
     parser.add_argument('--local', help='run locally (in this machine)', default=False, action='store_true')
     #parser.add_argument('--distance', help='distance between images', default=1.0)
     #parser.add_argument('--boot', help='bootstrap computation', default=False, action='store_true')
     args = parser.parse_args(argv)
 
-    return {'wait':args.wait, 'run_locally':args.local}
+    return {'wait':args.wait, 'run_locally':args.local, 'dry':arg.dry}
 
 def init(image_distance=1.0, argv=None):
     String.from_scratch(image_distance=image_distance).write_yaml()
@@ -787,14 +790,14 @@ def main(argv=None):
 
     # do at least one iteration
     if not string.propagated:
-        string = string.propagate(wait=options['wait'], run_locally=options['run_locally'])  # finish propagating
-    else:  # reparametrize and propagate at least once
-        string = string.bisect_and_propagate_util_connected(run_locally=options['run_locally']).reparametrize().propagate(wait=options['wait'], run_locally=options['run_locally'])
+        string = string.propagate(wait=options['wait'], run_locally=options['run_locally'], dry=options['dry'])  # finish propagating
+    #else:  # reparametrize and propagate at least once
+    #    string = string.bisect_and_propagate_util_connected(run_locally=options['run_locally']).reparametrize().propagate(wait=options['wait'], run_locally=options['run_locally'])
 
-    if options['wait']:  # keep looping
-        while True:
-            print(string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
-            string = string.bisect_and_propagate_util_connected(run_locally=options['run_locally']).reparametrize().propagate(wait=options['wait'], run_locally=options['run_locally'])
+    #if options['wait']:  # keep looping
+    #    while True:
+    #        print(string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
+    #        string = string.bisect_and_propagate_util_connected(run_locally=options['run_locally']).reparametrize().propagate(wait=options['wait'], run_locally=options['run_locally'])
 
 
 if __name__ == '__main__':
