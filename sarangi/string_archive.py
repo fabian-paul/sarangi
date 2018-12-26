@@ -41,7 +41,7 @@ def store(plan, fname_trajectory, fname_colvars_traj, sim_id):
     # TODO: export to command line interface
     root = os.environ['STRING_SIM_ROOT']
     branch, iteration, image_major, image_minor = sim_id.split('_')
-    fname_archived = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:02d}_{image_minor:02d}'.format(  # TODO: also have this as an environment variable...
+    fname_archived = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(  # TODO: also have this as an environment variable...
                             root=root, branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
                          )
     shutil.copy(fname_trajectory, fname_archived+'.dcd')
@@ -53,7 +53,7 @@ def extract(plan, sim_id, fname_dest_coor, fname_dest_box, top):
     me = next(i for i in plan['images'] if i['id']==sim_id)
     prev_id = me['prev_image_id']
     branch, iteration, image_major, image_minor = prev_id.split('_')
-    fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:02d}_{image_minor:02d}.dcd'.format(
+    fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
                     root=root, branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
                 )
     frame_index = me['prev_frame_number']

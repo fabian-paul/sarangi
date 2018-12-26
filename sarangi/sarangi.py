@@ -129,6 +129,7 @@ class Image(object):
         self.endpoint = endpoint
         self._pcoords = None
         self._mean = None
+        self._var = None
         self._cov = None
         self._x0 = None
 
@@ -147,7 +148,7 @@ class Image(object):
             node = self.node
         if spring is None:
             spring = self.spring
-        image_id = '{branch}_{iteration:03d}_{major_id:02d}_{minor_id:02d}'.format(
+        image_id = '{branch}_{iteration:03d}_{major_id:03d}_{minor_id:03d}'.format(
                         branch = branch, iteration=iteration, major_id=major_id, minor_id=minor_id
                     )
         if previous_image_id is None:
@@ -230,7 +231,7 @@ class Image(object):
         return float(str(self.id_major) + '.' + str(self.id_minor))
 
     #def id_str(self, arclength):
-    #    return '%3s_%03d_%02d_%02d' % (self.branch, self.iteration, self.id_major, self.id_minor)
+    #    return '%3s_%03d_%03d_%03d' % (self.branch, self.iteration, self.id_major, self.id_minor)
 
     @property
     def job_name(self):
@@ -240,14 +241,14 @@ class Image(object):
     def base(self):
         'Base path of the image. base+".dcd" are the replicas, base+".dat" are the order parameters'
         root = os.environ['STRING_SIM_ROOT']
-        return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:02d}_{id_minor:02d}'.format(
+        return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                root=root, branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
 
     @property
     def previous_base(self):
         root = os.environ['STRING_SIM_ROOT']
         branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
-        return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:02d}_{id_minor:02d}'.format(
+        return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                root=root, branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
 
     def submitted(self, queued_jobs):
@@ -332,9 +333,9 @@ class Image(object):
 
     @property
     def pcoords(self):
-        assert self.propagated
+        #assert self.propagated
         if self._pcoords is None:
-            var_names, self._pcoords = load_colvar(self.base + '.colvars.traj')
+            self._pcoords = load_colvar(self.base + '.colvars.traj')
         return self._pcoords
 
     @property
@@ -343,18 +344,29 @@ class Image(object):
         return self._mean
 
     @property
+    def var(self):
+        self._compute_moments()
+        return self._var
+
+    @property
     def cov(self):
         self._compute_moments()
         return self._cov
 
     def _compute_moments(self):
-        if self._mean is None or self._cov is None:
+        if self._mean is None or self._var is None:
             pcoords = self.pcoords
-            mean = np.mean(pcoords, axis=0)
-            mean_free = pcoords - mean[np.newaxis, :]
-            cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
-            self._mean = mean
-            self._cov = cov
+            #mean = np.mean(pcoords, axis=0)
+            self._mean = np.zeros(1, pcoords.dtype)
+            for n in pcoords.dtype.names:
+                self._mean[n] = np.mean(pcoords[n], axis=0)
+            self._var = np.zeros(1, pcoords.dtype)
+            for n in pcoords.dtype.names:
+                self._var[n] = np.var(pcoords[n], axis=0)
+            #mean_free = pcoords - mean[np.newaxis, :]
+            #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
+            #self._mean = mean
+            #self._cov = cov
 
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
@@ -390,7 +402,6 @@ class Image(object):
     @property
     def x0(self):
         if self._x0 is None:
-            root = os.environ['STRING_SIM_ROOT']
             path = self.previous_base + '.colvars.traj'
             self._x0 = load_colvar(np.loadtxt(path))[self.previous_frame_number, :]
         return self._x0
