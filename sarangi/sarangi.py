@@ -94,7 +94,7 @@ def load_structured(config):
     dtype_def = []
     for name, value in config.items():
         if isinstance(value, list):
-            dtype_def.append((name, np.float64, len(v)))
+            dtype_def.append((name, np.float64, len(value)))
         elif isinstance(value, float):
             dtype_def.append((name, np.float64))
         else:
@@ -527,9 +527,9 @@ class String(object):
                         previous_replica_id=0, node=None, endpoint=endpoint)
         return String(branch=branch, iteration=iteration_id, images=images, image_distance=image_distance, previous=None)
 
-    def _launch_simulation(self, image, random_number, wait, queued_jobs, run_locally):
+    def _launch_simulation(self, image, random_number, wait, queued_jobs, run_locally, dry):
         return image.propagate(random_number=random_number, wait=wait,
-                               queued_jobs=queued_jobs, run_locally=run_locally)
+                               queued_jobs=queued_jobs, run_locally=run_locally, dry=dry)
 
     def propagate(self, wait=False, run_locally=False, dry=False):
         '''Propagated the String (one iteration). Returns a modified copy.'''
@@ -759,7 +759,7 @@ def parse_commandline(argv=None):
     #parser.add_argument('--boot', help='bootstrap computation', default=False, action='store_true')
     args = parser.parse_args(argv)
 
-    return {'wait':args.wait, 'run_locally':args.local, 'dry':arg.dry}
+    return {'wait':args.wait, 'run_locally':args.local, 'dry':args.dry}
 
 def init(image_distance=1.0, argv=None):
     String.from_scratch(image_distance=image_distance).write_yaml()

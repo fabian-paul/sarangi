@@ -96,11 +96,12 @@ def write_colvar(colvars_file, colvars_template, sim_id, plan):
     with open(colvars_template) as f:
         config = ''.join(f.readlines()) + '\n'
     for restraint_name, restraint_value in me['node'].items():  # TODO: numpy conversion
+        restraint_value_namd = str(restraint_value).replace('[', '(').replace(']', ')')
         config += 'harmonic {{\n'\
                   'name {restraint_name}_restraint\n'\
                   'colvars {restraint_name}\n'\
-                  'forceconstant 10\n'\
-                  'centers {restraint_value}\n}}\n'.format(restraint_name=restraint_name, restraint_value=restraint_value)
+                  'forceconstant {spring}\n'\
+                  'centers {restraint_value}\n}}\n'.format(restraint_name=restraint_name, restraint_value=restraint_value_namd, spring=me['spring'][restraint_name])
     with open(colvars_file, 'w') as f:
         f.write(config)
     # add extra stuff, like changing images of the path collective variabel later;
