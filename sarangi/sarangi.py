@@ -118,6 +118,58 @@ def dump_structured(array):
     return config
 
 
+class Pcoord(object):
+    def __init__(self, folder, base, fields=None):
+        fname = folder + '/' + base
+        if os.path.exists(fname + '.colvars.trajs'):
+            self._pcoords = load_colvar(fname + '.colvars.trajs', selection=fields)
+        elif os.path.exists(fname + '.npy'):
+            self._pcoords = np.load(fname + '.npy')
+        else:
+            raise RuntimeError('No progress coordinates / colvar file found.')
+
+    def _compute_moments(self):
+        if self._mean is None or self._var is None:
+            pcoords = self._pcoords
+            #mean = np.mean(pcoords, axis=0)
+            self._mean = np.zeros(1, pcoords.dtype)
+            for n in pcoords.dtype.names:
+                self._mean[n] = np.mean(pcoords[n], axis=0)
+            self._var = np.zeros(1, pcoords.dtype)
+            for n in pcoords.dtype.names:
+                self._var[n] = np.var(pcoords[n], axis=0)
+            #mean_free = pcoords - mean[np.newaxis, :]
+            #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
+            #self._mean = mean
+            #self._cov = cov
+
+    def __getitem__(self, items):
+        return self._pcoords[items]
+
+    def __len__(self):
+        return self._pcoords.shape[0]
+
+    @property
+    def mean(self):
+        self._compute_moments()
+        return self._mean
+
+    @property
+    def var(self):
+        self._compute_moments()
+        return self._var
+
+    @property
+    def cov(self):
+        self._compute_moments()
+        return self._cov
+
+    # TODO: implement overlap comutation here
+    # usage Pcoord.overlap(im_1.pcoord('rmsd'), im_2.pcoord('rmsd'))
+    # im_1.pcoord('xyz').cov() ...
+    # maybe allow some memoization ?
+    #
+
 class Image(object):
     def __init__(self, image_id, previous_image_id, previous_frame_number,
                  node, spring, endpoint):
@@ -330,45 +382,52 @@ class Image(object):
         i = np.argmin(dist)
         return int(i), dist[i]
 
-    def get_pcoords(self, selection=None):
-        return load_colvar(self.base + '.colvars.traj', selection=selection)
+    #def get_pcoords(self, selection=None):
+    #    return load_colvar(self.base + '.colvars.traj', selection=selection)
 
-    @property
-    def pcoords(self):
-        #assert self.propagated
-        if self._pcoords is None:
-            self._pcoords = load_colvar(self.base + '.colvars.traj')
-        return self._pcoords
+    def pcoords(self, subdir='', fields=None, memoize=False):
+        root = os.environ['STRING_SIM_ROOT']
+        folder = '{root}/strings/{branch}_{iteration:03d}/'.format(
+               root=root, branch=self.branch, iteration=self.iteration)
+        base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
+               branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
+        return Pcoord(folder=folder + subdir, base=base, fields=fields)
+    #    # TODO: sometime the relevant coordinates are not in the colvar file put elsewhere (pcoord file?)
+    #    # TODO: come up with way of recomputing colvars on request (TODO: think about the network)
+    #    #assert self.propagated
+    #    if self._pcoords is None:
+    #        self._pcoords = load_colvar(self.base + '.colvars.traj')
+    #    return self._pcoords
 
-    @property
-    def mean(self):
-        self._compute_moments()
-        return self._mean
+    #@property
+    #def mean(self):
+    #    self._compute_moments()
+    #    return self._mean
 
-    @property
-    def var(self):
-        self._compute_moments()
-        return self._var
+    #@property
+    #def var(self):
+    #    self._compute_moments()
+    #    return self._var
 
-    @property
-    def cov(self):
-        self._compute_moments()
-        return self._cov
+    #@property
+    #def cov(self):
+    #    self._compute_moments()
+    #    return self._cov
 
-    def _compute_moments(self):
-        if self._mean is None or self._var is None:
-            pcoords = self.pcoords
-            #mean = np.mean(pcoords, axis=0)
-            self._mean = np.zeros(1, pcoords.dtype)
-            for n in pcoords.dtype.names:
-                self._mean[n] = np.mean(pcoords[n], axis=0)
-            self._var = np.zeros(1, pcoords.dtype)
-            for n in pcoords.dtype.names:
-                self._var[n] = np.var(pcoords[n], axis=0)
-            #mean_free = pcoords - mean[np.newaxis, :]
-            #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
-            #self._mean = mean
-            #self._cov = cov
+    #def _compute_moments(self):
+    #    if self._mean is None or self._var is None:
+    #        pcoords = self.pcoords
+    #        #mean = np.mean(pcoords, axis=0)
+    #        self._mean = np.zeros(1, pcoords.dtype)
+    #        for n in pcoords.dtype.names:
+    #            self._mean[n] = np.mean(pcoords[n], axis=0)
+    #        self._var = np.zeros(1, pcoords.dtype)
+    #        for n in pcoords.dtype.names:
+    #            self._var[n] = np.var(pcoords[n], axis=0)
+    #        #mean_free = pcoords - mean[np.newaxis, :]
+    #        #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
+    #        #self._mean = mean
+    #        #self._cov = cov
 
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
@@ -417,7 +476,7 @@ class Image(object):
         return pot
 
     @staticmethod
-    def bar(x_a, c_a, k_a, x_b, c_b, k_b, T=303.15):
+    def bar_1D(x_a, c_a, k_a, x_b, c_b, k_b, T=303.15):
         import pyemma
         RT = 1.985877534E-3*T
         btrajs = [np.zeros((x_a.shape[0], 2)), np.zeros((x_b.shape[0], 2))]
@@ -431,6 +490,23 @@ class Image(object):
         return mbar.f_therm[0] - mbar.f_therm[1]
         #return mbar.free_energies
 
+    def bar(self, other, T=303.15):
+        import pyemma
+        RT = 1.985877534E-3 * T  # kcal/mol
+        id_self = '%03d_%03d' % (self.id_major, self.id_minor)
+        id_other = '%03d_%03d' % (other.id_major, other.id_minor)
+        p_self = self.pcoords(subdir='RMSD')
+        p_other = other.pcoords(subdir='RMSD')
+        btrajs = [np.zeros((len(p_self), 2)), np.zeros((len(p_other), 2))]
+        btrajs[0][:, 0] = p_self[id_self]**2 * 5.0 / RT
+        btrajs[0][:, 0] = p_self[id_other]**2 * 5.0 / RT
+        btrajs[1][:, 0] = p_other[id_self]**2 * 5.0 / RT
+        btrajs[1][:, 1] = p_other[id_other]**2 * 5.0 / RT
+        ttrajs = [np.zeros(len(p_self), dtype=int), np.ones(len(p_other), dtype=int)]
+        mbar = pyemma.thermo.MBAR()
+        mbar.estimate((ttrajs, ttrajs, btrajs))
+        return mbar.f_therm[0] - mbar.f_therm[1]
+
     def fel(self, other, method='bar', T=303.15):
         assert method == 'bar'
         #if not self.propagated:
@@ -438,8 +514,8 @@ class Image(object):
         # TODO: concatenate all repeats
         fields = self.spring.dtype.names
         # assert all(fields == im_2.spring.dtype.names)  # FIXME
-        return Image.bar(x_a=self.get_pcoords(selection=fields), c_a=self.node, k_a=self.spring,
-                         x_b=other.get_pcoords(selection=fields), c_b=other.node,  k_b=other.spring, T=T)
+        return Image.bar_1D(x_a=self.get_pcoords(selection=fields), c_a=self.node, k_a=self.spring,
+                            x_b=other.get_pcoords(selection=fields), c_b=other.node,  k_b=other.spring, T=T)
 
 
 def load_jobs_PBS():
