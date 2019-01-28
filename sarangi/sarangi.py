@@ -179,7 +179,7 @@ class Image(object):
         self.node = node
         self.spring = spring
         self.endpoint = endpoint
-        self._pcoords = None
+        self._pcoords = {}
         self._mean = None
         self._var = None
         self._cov = None
@@ -385,13 +385,19 @@ class Image(object):
     #def get_pcoords(self, selection=None):
     #    return load_colvar(self.base + '.colvars.traj', selection=selection)
 
-    def pcoords(self, subdir='', fields=None, memoize=False):
-        root = os.environ['STRING_SIM_ROOT']
-        folder = '{root}/strings/{branch}_{iteration:03d}/'.format(
-               root=root, branch=self.branch, iteration=self.iteration)
-        base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-               branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
-        return Pcoord(folder=folder + subdir, base=base, fields=fields)
+    def pcoords(self, subdir='', fields=None, memoize=True):
+        if subdir in self._pcoords:
+            return self._pcoords[subdir]
+        else:
+            root = os.environ['STRING_SIM_ROOT']
+            folder = '{root}/strings/{branch}_{iteration:03d}/'.format(
+                   root=root, branch=self.branch, iteration=self.iteration)
+            base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
+                   branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
+            pcoords = Pcoord(folder=folder + subdir, base=base, fields=fields)
+            if memoize:
+                self._pcoords[subdir] = pcoords
+            return pcoords
     #    # TODO: sometime the relevant coordinates are not in the colvar file put elsewhere (pcoord file?)
     #    # TODO: come up with way of recomputing colvars on request (TODO: think about the network)
     #    #assert self.propagated
@@ -498,10 +504,10 @@ class Image(object):
         p_self = self.pcoords(subdir='RMSD')
         p_other = other.pcoords(subdir='RMSD')
         btrajs = [np.zeros((len(p_self), 2)), np.zeros((len(p_other), 2))]
-        btrajs[0][:, 0] = p_self[id_self]**2 * 5.0 / RT
-        btrajs[0][:, 0] = p_self[id_other]**2 * 5.0 / RT
-        btrajs[1][:, 0] = p_other[id_self]**2 * 5.0 / RT
-        btrajs[1][:, 1] = p_other[id_other]**2 * 5.0 / RT
+        btrajs[0][:, 0] = p_self[id_self][:]**2 * 5.0 / RT
+        btrajs[0][:, 1] = p_self[id_other][:]**2 * 5.0 / RT
+        btrajs[1][:, 0] = p_other[id_self][:]**2 * 5.0 / RT
+        btrajs[1][:, 1] = p_other[id_other][:]**2 * 5.0 / RT
         ttrajs = [np.zeros(len(p_self), dtype=int), np.ones(len(p_other), dtype=int)]
         mbar = pyemma.thermo.MBAR()
         mbar.estimate((ttrajs, ttrajs, btrajs))
