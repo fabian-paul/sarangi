@@ -122,6 +122,9 @@ def dump_structured(array):
 
 class Pcoord(object):
     def __init__(self, folder, base, fields=None):
+        self._mean = None
+        self._var = None
+        self._cov = None
         fname = folder + '/' + base
         if os.path.exists(fname + '.colvars.trajs'):
             self._pcoords = load_colvar(fname + '.colvars.trajs', selection=fields)
@@ -133,13 +136,16 @@ class Pcoord(object):
     def _compute_moments(self):
         if self._mean is None or self._var is None:
             pcoords = self._pcoords
-            #mean = np.mean(pcoords, axis=0)
-            self._mean = np.zeros(1, pcoords.dtype)
-            for n in pcoords.dtype.names:
-                self._mean[n] = np.mean(pcoords[n], axis=0)
-            self._var = np.zeros(1, pcoords.dtype)
-            for n in pcoords.dtype.names:
-                self._var[n] = np.var(pcoords[n], axis=0)
+            if pcoords.dtype.names is None:
+                self._mean = np.mean(pcoords, axis=0)
+                self._var =  np.var(pcoords, axis=0)
+            else:
+                self._mean = np.zeros(1, pcoords.dtype)
+                for n in pcoords.dtype.names:
+                    self._mean[n] = np.mean(pcoords[n], axis=0)
+                self._var = np.zeros(1, pcoords.dtype)
+                for n in pcoords.dtype.names:
+                    self._var[n] = np.var(pcoords[n], axis=0)
             #mean_free = pcoords - mean[np.newaxis, :]
             #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
             #self._mean = mean
@@ -150,6 +156,14 @@ class Pcoord(object):
 
     def __len__(self):
         return self._pcoords.shape[0]
+
+    @property
+    def as2D(self):
+        if self._pcoords.dtype.names is None:
+            n = self._pcoords.shape[0]
+            return self._pcoords.reshape((n, -1))
+        else:
+            raise NotImplementedError('as2D not yet implemented for structures array')
 
     @property
     def mean(self):
@@ -166,11 +180,104 @@ class Pcoord(object):
         self._compute_moments()
         return self._cov
 
+    def overlap_plane(self, other, indicator='max'):
+        import sklearn.svm
+        clf = sklearn.svm.LinearSVC()
+        X_self = self.as2D
+        X_other = other.as2D
+        X = np.vstack((X_self, X_other))
+        n_self = X_self.shape[0]
+        n_other = X_other.shape[0]
+        labels = np.zeros(n_self + n_other, dtype=int)
+        labels[n_self:] = 1
+        clf.fit(X, labels)
+        c = np.zeros((2, 2), dtype=int)
+        p_self = clf.predict(X_self)
+        p_other = clf.predict(X_other)
+        c[0, 0] = np.count_nonzero(p_self == 0)
+        c[0, 1] = np.count_nonzero(p_self == 1)
+        c[1, 0] = np.count_nonzero(p_other == 0)
+        c[1, 1] = np.count_nonzero(p_other == 1)
+        c_sum = c.sum(axis=1)
+        c_norm = c / c_sum[:, np.newaxis]
+        if indicator == 'max':
+            return max(c_norm[0, 1], c_norm[1, 0])
+        elif indicator == 'min':
+            return min(c_norm[0, 1], c_norm[1, 0])
+        elif indicator == 'down':
+            return c_norm[1, 0]  # other -> self
+        elif indicator == 'up':
+            return c_norm[0, 1]  # self -> other
+        else:
+            return c_norm
+
     # TODO: implement overlap comutation here
     # usage Pcoord.overlap(im_1.pcoord('rmsd'), im_2.pcoord('rmsd'))
     # im_1.pcoord('xyz').cov() ...
     # maybe allow some memoization ?
     #
+
+    def overlap_Bhattacharyya(self, other):
+        # https://en.wikipedia.org/wiki/Bhattacharyya_distance
+        #if self.endpoint or other.endpoint:
+        #    return 0
+        half_log_det_s1 = np.sum(np.log(np.diag(np.linalg.cholesky(self.cov))))
+        half_log_det_s2 = np.sum(np.log(np.diag(np.linalg.cholesky(other.cov))))
+        s = 0.5*(self.cov + other.cov)
+        half_log_det_s = np.sum(np.log(np.diag(np.linalg.cholesky(s))))
+        delta = self.mean - other.mean
+        return 0.125*np.dot(delta, np.dot(np.linalg.inv(s), delta)) + half_log_det_s - 0.5*half_log_det_s1 - 0.5*half_log_det_s2
+
+
+    def arclength_projection(self, nodes, order=0):
+        # TODO: also implement a simpler version of this algorithm
+        nodes =  np.array(nodes)
+        if nodes.ndim == 2:
+            axis = 1
+        elif nodes.ndim == 3:
+            axis = (1, 2)
+        else:
+            raise NotImplementedError('Nodes with ndim > 2 are not supported.')
+        results = []
+        for x in self._pcoords:
+            i = np.argmin(np.linalg.norm(x[np.newaxis, ...]-nodes, axis=axis))
+            if order == 0:
+                results.append(i)
+            elif order == 2:
+                if i == 0 or i==len(nodes) - 1:
+                    continue
+                mid = nodes[i]
+                plus = nodes[i + 1]
+                minus = nodes[i - 1]
+                v3 = plus - mid
+                v3v3 = np.vdot(v3, v3)
+                di = 1. #np.sign(i2 - i1)
+                v1 = mid - x
+                v2 = x - minus
+                #v1v2 = np.sum(v1*v2)
+                v1v3 = np.vdot(v1, v3)
+                v1v1 = np.vdot(v1, v1)
+                v2v2 = np.vdot(v2, v2)
+                results.append(
+                     i + (di*(v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3 - v3v3) / (2*v3v3))
+        return results
+
+    #def arclength_projection(self, plus, minus):
+    #    mid = self.mean
+    #    v3 = plus - mid
+    #    v3v3 = np.vdot(v3, v3)
+    #    di = 1. #np.sign(i2 - i1)
+    #    results = []
+    #    for x in self._pcoords:
+    #        v1 = mid - x
+    #        v2 = x - minus
+    #        #v1v2 = np.sum(v1*v2)
+    #        v1v3 = np.vdot(v1, v3)
+    #        v1v1 = np.vdot(v1, v1)
+    #        v2v2 = np.vdot(v2, v2)
+    #        results.append(
+    #             (di*(v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3 - v3v3) / (2*v3v3))
+    #    return results
 
 class Image(object):
     def __init__(self, image_id, previous_image_id, previous_frame_number,
@@ -182,9 +289,6 @@ class Image(object):
         self.spring = spring
         self.endpoint = endpoint
         self._pcoords = {}
-        self._mean = None
-        self._var = None
-        self._cov = None
         self._x0 = None
 
     def copy(self, branch=None, iteration=None, major_id=None, minor_id=None, node=None,
@@ -345,8 +449,8 @@ class Image(object):
             source = self.previous_base
             dest = self.base
             shutil.copy(source + '.dcd', dest + '.dcd')
-            if os.path.exists(source + '.colvar.traj'):  # if order were already computed
-                shutil.copy(source + '.colvar.traj', dest + '.colvar.traj')  # copy them
+            if os.path.exists(source + '.colvars.traj'):  # if order were already computed
+                shutil.copy(source + '.colvars.traj', dest + '.colvars.traj')  # copy them
             #else:  # compute the order parameters
             #    default_env = dict(os.environ)
             #    default_env.update(env)
@@ -362,13 +466,13 @@ class Image(object):
             else:
                 job_file = self._make_job_file(env)
                 if wait:
-                    command = 'qsub --wait ' + job_file
+                    command = 'qsub --wait ' + job_file  # TODO: slurm
                     print('run', command, '(', self.job_name, ')')
                     if not dry:
                         subprocess.run(command, shell=True)  # debug
                         # TODO: delete the job file
                 else:
-                    command = 'qsub ' + job_file
+                    command = 'qsub ' + job_file  # TODO: slurm
                     print('run', command, '(', self.job_name, ')')
                     if not dry:
                         subprocess.run(command, shell=True)  # debug
@@ -407,72 +511,19 @@ class Image(object):
     #        self._pcoords = load_colvar(self.base + '.colvars.traj')
     #    return self._pcoords
 
-    #@property
-    #def mean(self):
-    #    self._compute_moments()
-    #    return self._mean
+    def overlap_plane(self, other, subdir='', indicator='max'):
+        return self.pcoords(subdir=subdir).overlap_plane(other.pcoords(subdir=subdir), indicator=indicator)
 
-    #@property
-    #def var(self):
-    #    self._compute_moments()
-    #    return self._var
-
-    #@property
-    #def cov(self):
-    #    self._compute_moments()
-    #    return self._cov
-
-    #def _compute_moments(self):
-    #    if self._mean is None or self._var is None:
-    #        pcoords = self.pcoords
-    #        #mean = np.mean(pcoords, axis=0)
-    #        self._mean = np.zeros(1, pcoords.dtype)
-    #        for n in pcoords.dtype.names:
-    #            self._mean[n] = np.mean(pcoords[n], axis=0)
-    #        self._var = np.zeros(1, pcoords.dtype)
-    #        for n in pcoords.dtype.names:
-    #            self._var[n] = np.var(pcoords[n], axis=0)
-    #        #mean_free = pcoords - mean[np.newaxis, :]
-    #        #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
-    #        #self._mean = mean
-    #        #self._cov = cov
-
-    def overlap_Bhattacharyya(self, other):
-        # https://en.wikipedia.org/wiki/Bhattacharyya_distance
-        if self.endpoint or other.endpoint:
-            return 0
-        half_log_det_s1 = np.sum(np.log(np.diag(np.linalg.cholesky(self.cov))))
-        half_log_det_s2 = np.sum(np.log(np.diag(np.linalg.cholesky(other.cov))))
-        s = 0.5*(self.cov + other.cov)
-        half_log_det_s = np.sum(np.log(np.diag(np.linalg.cholesky(s))))
-        delta = self.mean - other.mean
-        return 0.125*np.dot(delta, np.dot(np.linalg.inv(s), delta)) + half_log_det_s - 0.5*half_log_det_s1 - 0.5*half_log_det_s2
- 
-    def overlap_plane(self, other):
-        import sklearn.svm
-        clf = sklearn.svm.LinearSVC()
-        X = np.vstack((self.pcoords, other.pcoords))
-        n_self = self.pcoords.shape[0]
-        n_other = other.pcoords.shape[0]
-        labels = np.zeros(n_self + n_other, dtype=int)
-        labels[n_self:] = 1
-        clf.fit(X, labels)
-        c = np.zeros((2, 2), dtype=int)
-        p_self = clf.predict(self.pcoords)
-        p_other = clf.predict(other.pcoords)
-        c[0, 0] = np.count_nonzero(p_self == 0)
-        c[0, 1] = np.count_nonzero(p_self == 1)
-        c[1, 0] = np.count_nonzero(p_other == 0)
-        c[1, 1] = np.count_nonzero(p_other == 1)
-        c_sum = c.sum(axis=1)
-        c_norm = c / c_sum[:, np.newaxis]
-        return max(c_norm[0, 1], c_norm[1, 0])
-
-    @property
-    def x0(self):
+    def x0(self, subdir='', fields=None):
+        # TODO: handle this for the case of images (???)
         if self._x0 is None:
-            path = self.previous_base + '.colvars.traj'
-            self._x0 = load_colvar(np.loadtxt(path))[self.previous_frame_number, :]
+            root = os.environ['STRING_SIM_ROOT']
+            branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
+            folder = '{root}/strings/{branch}_{iteration:03d}/'.format(
+                   root=root, branch=branch, iteration=int(iteration))
+            base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
+                   branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
+            self._x0 = Pcoord(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
         return self._x0
 
     @staticmethod
@@ -812,9 +863,27 @@ class String(object):
                 self.previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
         return self.previous
 
-    def overlap(self):
-        return [p.overlap_plane(q) for p,q in zip(self.images_ordered[0:-1], self.images_ordered[1:])]
-
+    def overlap(self, subdir='', indicator='max', matrix=False):
+        if not matrix:
+            o = np.zeros(len(self.images_ordered) - 1) + np.nan
+            for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
+                try:
+                    o[i] = a.overlap_plane(b, subdir=subdir, indicator=indicator)
+                except Exception as e:
+                    print(e)
+            return o
+        else:
+            o = np.zeros((len(self.images_ordered) - 1, len(self.images_ordered) - 1)) + np.nan
+            for i, a in enumerate(self.images_ordered[0:-1]):
+                o[i, i] = 1.
+                for j, b in enumerate(self.images_ordered[i+1:]):
+                    try:
+                       o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, indicator=indicator)
+                       o[i + j + 1, i] = o[i, i + j + 1]
+                    except Exception as e:
+                       print(e)
+            o[-1, -1] = 1.
+            return o
 
     def fel(self, T=303.15):
         f = np.zeros(len(self.images) - 1) + np.nan
@@ -827,6 +896,28 @@ class String(object):
         return f
 
         # TODO: implement simple overlap ... add selection of order parameters!
+
+    #def arclength_projections(self, subdir=''):
+    #    io = self.images_ordered
+    #    results = []
+    #    for a, b, c, i in zip(io[0:-2], io[1:-1], io[2:], np.arange(len(io) - 2)):
+    #        # TODO: could also use center? But this would be confusing here
+    #        plus = a.pcoords(subdir=subdir).mean
+    #        minus = b.pcoords(subdir=subdir).mean
+    #        x = i + b.pcoords(subdir=subdir).projection(plus, minus)
+    #        results.append(x)
+    #    return results
+
+    def arclength_projections(self, subdir='', order=0):
+        x0s = [image.x0(subdir=subdir) for image in self.images_ordered]
+        results = []
+        for image in self.images_ordered:
+            try:
+                x = image.pcoords(subdir=subdir)
+                results.append(x.arclength_projection(x0s, order=order))
+            except Exception as e:
+                print(e)
+        return results
 
 
 def parse_commandline(argv=None):
