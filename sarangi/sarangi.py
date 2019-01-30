@@ -97,8 +97,10 @@ def load_structured(config):
             dtype_def.append((name, np.float64, len(value)))
         elif isinstance(value, float):
             dtype_def.append((name, np.float64))
+        elif isinstance(value, int):
+            dtype_def.append((name, int))
         else:
-            raise RuntimeError('unrecognized type')
+            raise RuntimeError('unrecognized type %s', type(value))
     dtype = np.dtype(dtype_def)
     array = np.zeros(1, dtype=dtype)
     for name, value in config.items():
@@ -250,7 +252,7 @@ class Image(object):
 
     @property
     def propagated(self):
-        return os.path.exists(self.base + '.dcd') and os.path.exists(self.base + '.colvars.traj')
+        return os.path.exists(self.base + '.dcd') #and os.path.exists(self.base + '.colvars.traj')
 
     def _make_job_file(self, env):
         'Created a submission script for the job on the local file system.'
