@@ -831,7 +831,7 @@ class String(object):
                 rib += '.'  # not submitted, only defined
         return rib
 
-    def write_yaml(self, backup=False):  # TODO: rename to save_status
+    def write_yaml(self, backup=True):  # TODO: rename to save_status
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/#iteration'
         import shutil
         string = {}
