@@ -262,6 +262,18 @@ class Pcoord(object):
                      i + (di*(v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3 - v3v3) / (2*v3v3))
         return results
 
+    def closest_point(self, x):
+        'Find the replica which is closest to x in order parameters space.'
+        if self._pcoords.ndim == 2:
+            axis = 1
+        elif self._pcoords.ndim == 3:
+            axis = (1, 2)
+        else:
+            raise NotImplementedError('Nodes with ndim > 2 are not supported.')
+        dist = np.linalg.norm(self._pcoords - x[np.newaxis, ...], axis=axis)
+        i = np.argmin(dist)
+        return {'i':int(i), 'd':dist[i], 'x':self._pcoords[i]}
+
     #def arclength_projection(self, plus, minus):
     #    mid = self.mean
     #    v3 = plus - mid
@@ -281,18 +293,19 @@ class Pcoord(object):
 
 class Image(object):
     def __init__(self, image_id, previous_image_id, previous_frame_number,
-                 node, spring, endpoint):
+                 node, spring, endpoint, atoms_1):
         self.image_id = image_id
         self.previous_image_id = previous_image_id
         self.previous_frame_number = previous_frame_number
         self.node = node
         self.spring = spring
         self.endpoint = endpoint
+        self.atoms_1 = atoms_1
         self._pcoords = {}
         self._x0 = None
 
     def copy(self, branch=None, iteration=None, major_id=None, minor_id=None, node=None,
-             spring=None, previous_image_id=None, previous_frame_number=None):
+             spring=None, previous_image_id=None, previous_frame_number=None, atoms_1=None):
         'Copy the Image object, allowing parameter changes'
         if iteration is None:
             iteration = self.iteration
@@ -306,6 +319,8 @@ class Image(object):
             node = self.node
         if spring is None:
             spring = self.spring
+        if atoms_1 is None:
+            atoms_1 = self.atoms_1
         image_id = '{branch}_{iteration:03d}_{major_id:03d}_{minor_id:03d}'.format(
                         branch = branch, iteration=iteration, major_id=major_id, minor_id=minor_id
                     )
@@ -315,7 +330,7 @@ class Image(object):
             previous_frame_number=self.previous_frame_number,
         return Image(image_id=image_id, previous_image_id=previous_image_id, 
                      previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, endpoint=self.endpoint)
+                     node=node, spring=spring, endpoint=self.endpoint, atoms_1=atoms_1)
 
     @classmethod
     def load(cls, config):
@@ -331,27 +346,30 @@ class Image(object):
             spring = load_structured(config['spring'])
         else:
             spring = None
+        if 'atoms_1' in config:
+            atoms_1 = config['atoms_1']
+        else:
+            atoms_1 = None
         if 'endpoint' in config:
             endpoint = config['endpoint']
         else:
             endpoint = False
         return Image(image_id=image_id, previous_image_id=previous_image_id,
                      previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, endpoint=endpoint)
+                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1)
 
     def dump(self):
         'Dump state of object to dictionary. Called by String.dump'
+        config = {'id': self.image_id, 'prev_image_id': self.previous_image_id,
+                  'prev_frame_number': self.previous_frame_number}
         if self.node is not None:
-            node = dump_structured(self.node)
-        else:
-            node = None  # TODO: omit?
+            config['node'] = dump_structured(self.node)
         if self.spring is not None:
-            spring = dump_structured(self.spring)
-        else:
-            spring = None  # TODO: omit?
-        config = {'image_id': self.image_id, 'prev_image_id': self.previous_image_id, 
-                  'prev_frame_number': self.previous_frame_number,
-                  'node': node, 'spring': spring, 'endpoint': self.endpoint}
+            config['spring'] = dump_structured(self.spring)
+        if self.atoms_1 is not None:
+            config['atoms_1'] = self.atoms_1
+        if self.endpoint is not None and self.endpoint:
+            config['endpoint'] = self.endpoint
         return config
 
     @property
@@ -704,7 +722,50 @@ class String(object):
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
-    def bisect(self):
+    def bisect_at(self, i, subdir='', where='mean'):
+        p = self.images_ordered[i]
+        q = self.images_ordered[i + 1]
+        if where == 'mean':
+            x = (p.pcoords(subdir=subdir).mean + q.pcoords(subdir=subdir).mean) * 0.5
+        elif where == 'x0':
+            x = (p.x0(subdir=subdir) + q.x0(subdir=subdir)) * 0.5
+        elif where == 'plane':
+            raise NotImplementedError('bisection at SVM plane not implemented yet')
+        else:
+            raise ValueError('Unrecognized value "%s" for option "where"' % where)
+
+        query_p = p.pcoords(subdir=subdir).closest_point(x)
+        query_q = q.pcoords(subdir=subdir).closest_point(x)
+        if query_p['d'] < query_q['d']:
+            print('best distance is', query_p['d'])
+            best_image = p
+            best_step = query_p['i']
+        else:
+            print('best distance is', query_q['d'])
+            best_image = q
+            best_step = query_q['i']
+
+        new_seq = (p.seq + q.seq) * 0.5
+        new_major = int(new_seq)
+        new_minor = int((new_seq - new_major)*1000)
+        new_image_id = '%s_%03d_%03d_%03d' %(best_image.branch, best_image.iteration, new_major, new_minor)
+
+        new_image = Image(image_id=new_image_id, previous_image_id=best_image.image_id, previous_frame_number=best_step,
+                          node=best_image.node, spring=best_image.spring, endpoint=False, atoms_1=list(best_image.atoms_1))
+
+        #   self.images[new_image.seq] = new_image
+        return new_image
+        # TODO: insert
+        #new_image = Image(image_id=new_image_id,
+        #                  previous_iteration_id=best_image.iteration_id,
+        #                  previous_image_id=best_image.image_id, previous_replica_id=best_step,
+        #                  node=x, endpoint=False)
+        #
+        #best = int(np.argmin([r[1] for r in results]))
+        #return images[best], results[best][0], results[best][1]
+
+    def bisect(self, subdir=''):
+        raise NotImplementedError('This is broken')
         if not self.propagated:
             raise RuntimeError('Trying to bisect string that has not been (fully) propagated. Giving up.')
         # TODO
@@ -713,7 +774,7 @@ class String(object):
         for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]):
             new_string.images[p.image_id] = p  # copy p
 
-            overlap = p.overlap_plane(q)
+            overlap = p.overlap_plane(q, subdir=subdir)
             print('overlap', overlap)
             if overlap < 0.1:
                 print('besecting')
@@ -773,13 +834,15 @@ class String(object):
     def write_yaml(self, backup=False):  # TODO: rename to save_status
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/#iteration'
         import shutil
-        config = {}
+        string = {}
         for key, image in self.images.items():
-            assert key==image.image_id
-        config['images'] = [image.dump() for image in self.images_ordered]
-        config['branch'] = self.branch
-        config['iteration'] = self.iteration
-        config['image_distance'] = self.image_distance
+            assert key==image.seq
+        string['images'] = [image.dump() for image in self.images_ordered]
+        string['branch'] = self.branch
+        string['iteration'] = self.iteration
+        string['image_distance'] = self.image_distance
+        config = {}
+        config['strings'] = [string]
         mkdir(os.path.expandvars('$STRING_SIM_ROOT/strings/%s_%03d/' % (self.branch, self.iteration)))
         fname_base = os.path.expandvars('$STRING_SIM_ROOT/strings/%s_%03d/plan' % (self.branch, self.iteration))
         if backup and os.path.exists(fname_base + '.yaml'):
@@ -790,7 +853,7 @@ class String(object):
                 attempt += 1
             shutil.move(fname_base + '.yaml', fname_backup)
         with open(fname_base + '.yaml', 'w') as f:
-            yaml.dump([config], f, default_flow_style=False)
+            yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
     def reparametrize(self, freeze=None):
         'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String. Call .propagate to launch the simulations.'
@@ -870,7 +933,7 @@ class String(object):
                 try:
                     o[i] = a.overlap_plane(b, subdir=subdir, indicator=indicator)
                 except Exception as e:
-                    print(e)
+                    warnings.warn(str(e))
             return o
         else:
             o = np.zeros((len(self.images_ordered) - 1, len(self.images_ordered) - 1)) + np.nan
@@ -881,7 +944,7 @@ class String(object):
                        o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, indicator=indicator)
                        o[i + j + 1, i] = o[i, i + j + 1]
                     except Exception as e:
-                       print(e)
+                       warnings.warn(str(e))
             o[-1, -1] = 1.
             return o
 
@@ -892,7 +955,7 @@ class String(object):
             try:
                 f[i] = a.fel(b, T=T)
             except Exception as e:
-                pass
+                warnings.warn(str(e))
         return f
 
         # TODO: implement simple overlap ... add selection of order parameters!
@@ -916,7 +979,7 @@ class String(object):
                 x = image.pcoords(subdir=subdir)
                 results.append(x.arclength_projection(x0s, order=order))
             except Exception as e:
-                print(e)
+                warnings.warn(str(e))
         return results
 
 
