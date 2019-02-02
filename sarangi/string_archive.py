@@ -182,8 +182,8 @@ if __name__ == '__main__':
 
     print('end achivist')
 
-else:
-    del mdtraj
-    del os
-    del shutil
-    del warnings
+#else:
+#    del mdtraj
+#    del os
+#    del shutil
+#    del warnings
