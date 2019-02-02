@@ -39,7 +39,7 @@ def save_xsc(traj, fname, frame=0):
     #frame.save_netcdfrst(fname_dest)
 
 
-def load_plan(fname_plan, sim_id):
+def load_plan(fname_plan, sim_id=None):
     #branch, iteration, image_major, image_minor = prev_id.split('_')
     import yaml
     with open(fname_plan) as f:
