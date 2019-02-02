@@ -7,4 +7,6 @@ setup(name='sarangi',
       author_email='fab@physik.tu-berlin.de',
       license='LGPLv3+',
       packages=['sarangi'],
-      zip_safe=False)
+      zip_safe=False,
+      data_files=[('scripts', ['scripts/rmsd.py']),]
+      )

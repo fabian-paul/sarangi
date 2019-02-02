@@ -443,6 +443,7 @@ class Image(object):
         env['STRING_PREV_ARCHIVE'] = self.previous_base
         env['STRING_ARCHIVE'] = self.base
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
+        env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
         return env
 
     def propagate(self, random_number, wait, queued_jobs, run_locally=False, dry=False):
