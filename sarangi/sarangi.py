@@ -515,7 +515,7 @@ class Image(object):
             return self._pcoords[subdir]
         else:
             root = os.environ['STRING_SIM_ROOT']
-            folder = '{root}/strings/{branch}_{iteration:03d}/'.format(
+            folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
                    root=root, branch=self.branch, iteration=self.iteration)
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                    branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
@@ -534,11 +534,10 @@ class Image(object):
         return self.pcoords(subdir=subdir).overlap_plane(other.pcoords(subdir=subdir), indicator=indicator)
 
     def x0(self, subdir='', fields=None):
-        # TODO: handle this for the case of images (???)
         if self._x0 is None:
             root = os.environ['STRING_SIM_ROOT']
             branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
-            folder = '{root}/strings/{branch}_{iteration:03d}/'.format(
+            folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
                    root=root, branch=branch, iteration=int(iteration))
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                    branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
@@ -584,6 +583,7 @@ class Image(object):
         mbar = pyemma.thermo.MBAR()
         mbar.estimate((ttrajs, ttrajs, btrajs))
         return mbar.f_therm[0] - mbar.f_therm[1]
+
 
     def fel(self, other, method='bar', T=303.15):
         assert method == 'bar'
@@ -823,7 +823,7 @@ class String(object):
         rib = ''
         for image in self.images_ordered:
             if image.propagated:
-                rib += 'c'  # completed
+                rib += 'C'  # completed
             elif queued_jobs is None:
                 rib += '?'
             elif image.submitted(queued_jobs):
@@ -834,6 +834,7 @@ class String(object):
 
     def write_yaml(self, backup=True):  # TODO: rename to save_status
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/#iteration'
+        # TODO: think of saving this to the commits folder in general...
         import shutil
         string = {}
         for key, image in self.images.items():
@@ -982,6 +983,38 @@ class String(object):
             except Exception as e:
                 warnings.warn(str(e))
         return results
+
+    def mbar(self, T=303.15, k_half=1., subdir='rmsd'):
+        import collections
+        import pyemma.thermo
+
+        RT = 1.985877534E-3 * T  # kcal/mol
+
+        # Convention for ensemble IDs: sarangi does not use any explict enesemble IDs
+        # Ensembles are simply defined by the bias parameters and are not given any extra label
+        # This removes unnecessary administrative operations.
+        # This is the same procedure as in Pyemma (Ch. Wehmeyer's implementation)
+        parameters_to_names = collections.defaultdict(list)
+        for im in self.images:  # TODO: have a full convention for defining biases (e.g. type + params)
+            bias_identifier = (im.prev_im_id, im.prev_frame, tuple(im.atoms_1))   # convert back from numpy?
+            parameters_to_names[bias_identifier].append(im.id)
+        # generate running indices for all the different biases
+        names_to_indices = {}
+        for i, names in enumerate(parameters_to_names.values()):
+            for name in names:
+                names_to_indices[name] = i
+
+        btrajs = []
+        ttrajs = []
+        for im in self.images_ordered:
+            x = im.pcoord(subdir=subdir)
+            permutation = [names_to_indices[name] for name in x.dtype.names]  # does this work?
+            # TODO: what do we do is there are names that are not found?
+            btrajs.append(k_half*x[:, permutation]**2 / RT)
+            ttrajs.append(np.zeros(dtype=int) + names_to_indices[im.id])
+
+        mbar = pyemma.thermo.MBAR().estimate((ttrajs, ttrajs, btrajs))  # CHECK!
+        return mbar
 
 
 def parse_commandline(argv=None):

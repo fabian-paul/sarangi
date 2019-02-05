@@ -1,4 +1,5 @@
 import numpy as np
+import warnings
 
 def point_at_arc_length_in_segment(p, q, s0, d):
     r'''Get point at arc length s + d on the segment [p, q].
