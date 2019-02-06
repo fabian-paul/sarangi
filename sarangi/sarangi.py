@@ -122,6 +122,8 @@ def dump_structured(array):
 
 class Pcoord(object):
     def __init__(self, folder, base, fields=None):
+        # TODO: in principle pcoords can be recomputed from the full trajectories if they are missing
+        # TODO: implement this (or steps toward this). How can the computation of observables be automatized in a good way?
         self._mean = None
         self._var = None
         self._cov = None
@@ -131,7 +133,7 @@ class Pcoord(object):
         elif os.path.exists(fname + '.npy'):
             self._pcoords = np.load(fname + '.npy')
         else:
-            raise RuntimeError('No progress coordinates / colvar file found.')
+            raise RuntimeError('No progress coordinates / colvar file %s found.' % fname)
 
     def _compute_moments(self):
         if self._mean is None or self._var is None:
@@ -454,7 +456,7 @@ class Image(object):
 
         #  if the job is already queued, return or wait and return then
         if self.job_name in queued_jobs:
-            print('skipping submission of', self.job_name, 'because alrealy queued')
+            print('skipping submission of', self.job_name, 'because already queued')
             if wait:  # poll the results file
                 while not self.propagated:
                     time.sleep(30)
@@ -723,9 +725,22 @@ class String(object):
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
-    def bisect_at(self, i, subdir='', where='mean'):
-        p = self.images_ordered[i]
-        q = self.images_ordered[i + 1]
+    def bisect_at(self, i, j=None, subdir='', where='mean'):
+        # TODO: think more about the parameters ...
+        if j is None:
+            j += i + 1
+        if isinstance(i, int):
+            p = self.images_ordered[i]
+        elif isinstance(i, float):
+            p = self.images[i]
+        else:
+            raise ValueError('parameter i has incorrect type')
+        if isinstance(j, int):
+            q = self.images_ordered[j]
+        elif isinstance(j, float):
+            q = self.images[j]
+        else:
+            raise ValueError('parameter j has incorrect type')
         if where == 'mean':
             x = (p.pcoords(subdir=subdir).mean + q.pcoords(subdir=subdir).mean) * 0.5
         elif where == 'x0':
@@ -928,7 +943,7 @@ class String(object):
                 self.previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
         return self.previous
 
-    def overlap(self, subdir='', indicator='max', matrix=False):
+    def overlap(self, subdir='', indicator='max', matrix=False, return_ids=False):
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
@@ -936,9 +951,12 @@ class String(object):
                     o[i] = a.overlap_plane(b, subdir=subdir, indicator=indicator)
                 except Exception as e:
                     warnings.warn(str(e))
-            return o
+            if return_ids:
+                return o, [(p.seq, q.seq) for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:])]
+            else:
+                return o
         else:
-            o = np.zeros((len(self.images_ordered) - 1, len(self.images_ordered) - 1)) + np.nan
+            o = np.zeros((len(self.images_ordered), len(self.images_ordered))) + np.nan
             for i, a in enumerate(self.images_ordered[0:-1]):
                 o[i, i] = 1.
                 for j, b in enumerate(self.images_ordered[i+1:]):
@@ -995,9 +1013,11 @@ class String(object):
         # This removes unnecessary administrative operations.
         # This is the same procedure as in Pyemma (Ch. Wehmeyer's implementation)
         parameters_to_names = collections.defaultdict(list)
-        for im in self.images:  # TODO: have a full convention for defining biases (e.g. type + params)
-            bias_identifier = (im.prev_im_id, im.prev_frame, tuple(im.atoms_1))   # convert back from numpy?
-            parameters_to_names[bias_identifier].append(im.id)
+        for im in self.images.values():  # TODO: have a full convention for defining biases (e.g. type + params)
+            bias_identifier = (
+            im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1))  # convert back from numpy?
+            parameters_to_names[bias_identifier].append(im.image_id)
+        K = len(parameters_to_names)  # number of (unique) ensembles
         # generate running indices for all the different biases
         names_to_indices = {}
         for i, names in enumerate(parameters_to_names.values()):
@@ -1006,16 +1026,29 @@ class String(object):
 
         btrajs = []
         ttrajs = []
-        for im in self.images_ordered:
-            x = im.pcoord(subdir=subdir)
-            permutation = [names_to_indices[name] for name in x.dtype.names]  # does this work?
-            # TODO: what do we do is there are names that are not found?
-            btrajs.append(k_half*x[:, permutation]**2 / RT)
-            ttrajs.append(np.zeros(dtype=int) + names_to_indices[im.id])
+        for im in self.images.values():
+            # print('loading', im.image_id)
+            x = im.pcoords(subdir=subdir, memoize=False)
+            # print('done loading')
+            btraj = np.zeros((len(x), K)) + np.nan  # shape??
+            biases_defined = set()
 
-        mbar = pyemma.thermo.MBAR().estimate((ttrajs, ttrajs, btrajs))  # CHECK!
+            for name in x._pcoords.dtype.names:
+                if name in names_to_indices:
+                    btraj[:, names_to_indices[name]] = k_half * x[name] ** 2 / RT
+                    biases_defined.add(names_to_indices[name])
+                else:
+                    warning.warn('field %s in pcoord does not correspond to any ensemble' % name)
+            if len(biases_defined) != K:
+                raise ValueError('Image %s is missing some biased / has too many biases' % im.image_id)
+            assert not np.any(np.isnan(btraj))
+            btrajs.append(btraj)
+            ttrajs.append(np.zeros(len(x), dtype=int) + names_to_indices[im.image_id])
+
+        print('running MBAR')  # TODO: overlap option????
+        mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
+        mbar.estimate((ttrajs, ttrajs, btrajs))
         return mbar
-
 
 def parse_commandline(argv=None):
     import argparse
