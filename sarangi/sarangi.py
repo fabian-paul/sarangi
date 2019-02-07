@@ -120,6 +120,14 @@ def dump_structured(array):
     return config
 
 
+def overlap_gaps(matrix, threshold=0.99):
+    import msmtools
+    c = matrix.sum(axis=1)
+    T = matrix / c[:, np.newaxis]
+    n = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
+    return msmtools.analysis.pcca(T, n)
+
+
 class Pcoord(object):
     def __init__(self, folder, base, fields=None):
         # TODO: in principle pcoords can be recomputed from the full trajectories if they are missing
@@ -140,7 +148,7 @@ class Pcoord(object):
             pcoords = self._pcoords
             if pcoords.dtype.names is None:
                 self._mean = np.mean(pcoords, axis=0)
-                self._var =  np.var(pcoords, axis=0)
+                self._var = np.var(pcoords, axis=0)
             else:
                 self._mean = np.zeros(1, pcoords.dtype)
                 for n in pcoords.dtype.names:
@@ -304,7 +312,7 @@ class Image(object):
         self.endpoint = endpoint
         self.atoms_1 = atoms_1
         self._pcoords = {}
-        self._x0 = None
+        self._x0 = {}
 
     def copy(self, branch=None, iteration=None, major_id=None, minor_id=None, node=None,
              spring=None, previous_image_id=None, previous_frame_number=None, atoms_1=None):
@@ -536,15 +544,15 @@ class Image(object):
         return self.pcoords(subdir=subdir).overlap_plane(other.pcoords(subdir=subdir), indicator=indicator)
 
     def x0(self, subdir='', fields=None):
-        if self._x0 is None:
+        if subdir not in self._x0:
             root = os.environ['STRING_SIM_ROOT']
             branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
                    root=root, branch=branch, iteration=int(iteration))
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                    branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
-            self._x0 = Pcoord(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
-        return self._x0
+            self._x0[subdir] = Pcoord(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
+        return self._x0[subdir]
 
     @staticmethod
     def u(x, c, k, T=303.15):
@@ -725,7 +733,7 @@ class String(object):
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
-    def bisect_at(self, i, j=None, subdir='', where='mean'):
+    def bisect_at(self, i, j=None, subdir='', where='mean', search='string'):
         # TODO: think more about the parameters ...
         if j is None:
             j += i + 1
@@ -750,16 +758,25 @@ class String(object):
         else:
             raise ValueError('Unrecognized value "%s" for option "where"' % where)
 
-        query_p = p.pcoords(subdir=subdir).closest_point(x)
-        query_q = q.pcoords(subdir=subdir).closest_point(x)
-        if query_p['d'] < query_q['d']:
-            print('best distance is', query_p['d'])
-            best_image = p
-            best_step = query_p['i']
+        if search == 'points':
+            query_p = p.pcoords(subdir=subdir).closest_point(x)
+            query_q = q.pcoords(subdir=subdir).closest_point(x)
+            if query_p['d'] < query_q['d']:
+                print('best distance is', query_p['d'])
+                best_image = p
+                best_step = query_p['i']
+            else:
+                print('best distance is', query_q['d'])
+                best_image = q
+                best_step = query_q['i']
+        elif search == 'string':
+            responses = [(im, im.pcoords(subdir=subdir).closest_point(x)) for im in self.images.values()]
+            best_idx = np.argmin([r[1]['d'] for r in responses])
+            best_image = responses[best_idx][0]
+            best_step = responses[best_idx][1]['i']
+            print('best distance is', responses[best_idx][1]['d'])
         else:
-            print('best distance is', query_q['d'])
-            best_image = q
-            best_step = query_q['i']
+            raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
         new_seq = (p.seq + q.seq) * 0.5
         new_major = int(new_seq)
@@ -782,6 +799,17 @@ class String(object):
 
     def bisect(self, subdir=''):
         raise NotImplementedError('This is broken')
+
+        ov_max, idx = self.overlap(subdir=subdir, indicator='max', return_ids=True)
+        gaps = np.array(idx)[ov_max < 0.10]
+        new_imgs = []
+        new_string = self.empty_copy()  # images=string.images  # TODO???
+        for gap in gaps:
+            new_img = string.bisect_at(i=gap[0], j=gap[1], subdir='cartesian', where='x0')
+            new_imgs.append(new_img)
+            new_string.images[new_img.seq] = new_img
+        return new_string  # new_string.write_yaml()
+
         if not self.propagated:
             raise RuntimeError('Trying to bisect string that has not been (fully) propagated. Giving up.')
         # TODO
@@ -1003,22 +1031,26 @@ class String(object):
         return results
 
     def mbar(self, T=303.15, k_half=1., subdir='rmsd'):
+        # TODO: also implement the simpler case with a simple order parameter
         import collections
         import pyemma.thermo
 
         RT = 1.985877534E-3 * T  # kcal/mol
 
-        # Convention for ensemble IDs: sarangi does not use any explict enesemble IDs
-        # Ensembles are simply defined by the bias parameters and are not given any extra label
-        # This removes unnecessary administrative operations.
-        # This is the same procedure as in Pyemma (Ch. Wehmeyer's implementation)
-        parameters_to_names = collections.defaultdict(list)
-        for im in self.images.values():  # TODO: have a full convention for defining biases (e.g. type + params)
-            bias_identifier = (
-            im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1))  # convert back from numpy?
+        # Convention for ensemble IDs: sarangi does not use any explict ensemble IDs.
+        # Ensembles are simply defined by the bias parameters and are not given any canonical label.
+        # This is the same procedure as in Pyemma (Ch. Wehmeyer's harmonic US API).
+        # For data exchange, biases are simply labeled with the ID of a simulations that uses the bias.
+        # This is e.g. used in precomputed bias energies / precomputed spring extensions.
+        # Data exchange labels are not unique (there can't be any unique label that's not arbitrary).
+        # So we have to go back to the actual bias definitions and map them to their possible IDs.
+        parameters_to_names = collections.defaultdict(list)  # which bias IDs point to the same bias?
+        for im in self.images.values():  # TODO: have a full universal convention for defining biases (e.g. type + params)
+            bias_identifier = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1))  # convert back from numpy?
             parameters_to_names[bias_identifier].append(im.image_id)
+        # TODO: what if the defintions span multiple string iterations or multiple branches?
         K = len(parameters_to_names)  # number of (unique) ensembles
-        # generate running indices for all the different biases
+        # generate running indices for all the different biases; generate map from bias IDs to running indices
         names_to_indices = {}
         for i, names in enumerate(parameters_to_names.values()):
             for name in names:
@@ -1038,7 +1070,7 @@ class String(object):
                     btraj[:, names_to_indices[name]] = k_half * x[name] ** 2 / RT
                     biases_defined.add(names_to_indices[name])
                 else:
-                    warning.warn('field %s in pcoord does not correspond to any ensemble' % name)
+                    warnings.warn('field %s in pcoord does not correspond to any ensemble' % name)
             if len(biases_defined) != K:
                 raise ValueError('Image %s is missing some biased / has too many biases' % im.image_id)
             assert not np.any(np.isnan(btraj))
@@ -1048,7 +1080,15 @@ class String(object):
         print('running MBAR')  # TODO: overlap option????
         mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
         mbar.estimate((ttrajs, ttrajs, btrajs))
-        return mbar
+
+        # prepare "xaxis" to use for plots
+        xaxis = [-1] * len(names_to_indices)
+        for id_, number in names_to_indices.items():
+            _, _, major, minor = id_.split('_')
+            xaxis[number] = float(major + '.' + minor)
+
+        return mbar, xaxis
+
 
 def parse_commandline(argv=None):
     import argparse
