@@ -12,6 +12,20 @@ import time
 from .reparametrization import *
 
 
+def root():
+    if 'STRING_SIM_ROOT' in os.environ:
+        return os.environ['STRING_SIM_ROOT']
+    else:
+        folder = os.path.realpath('.')
+        while not os.path.exists(os.path.join(folder, '.sarangirc')) and folder != '/':
+            # print('looking at', folder)
+            folder = os.path.realpath(os.path.join(folder, '..'))
+        if os.path.exists(os.path.join(folder, '.sarangirc')):
+            return folder
+        else:
+            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and no .sarangirc file was found.')
+
+
 def parse_line(tokens):
     #print(tokens)
     in_vector = False
@@ -388,7 +402,7 @@ class Image(object):
 
     def _make_job_file(self, env):
         'Created a submission script for the job on the local file system.'
-        with open(os.path.expandvars('$STRING_SIM_ROOT/setup/jobfile.template')) as f:
+        with open('%s/setup/jobfile.template' % root()) as f:
             template = ''.join(f.readlines())
             environment = '\n'.join(['export %s=%s' % (k, v) for k, v in env.items()])
         with tempfile.NamedTemporaryFile(suffix='.sh', delete=False) as f:
@@ -426,23 +440,21 @@ class Image(object):
     @property
     def base(self):
         'Base path of the image. base+".dcd" are the replicas, base+".dat" are the order parameters'
-        root = os.environ['STRING_SIM_ROOT']
         return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-               root=root, branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
+               root=root(), branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
 
     @property
     def previous_base(self):
-        root = os.environ['STRING_SIM_ROOT']
         branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
         return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-               root=root, branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
+               root=root(), branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
 
     def submitted(self, queued_jobs):
         return self.job_name in queued_jobs
 
     def _make_env(self, random_number):
         env = dict()
-        root = os.environ['STRING_SIM_ROOT']
+        root = root()
         env['STRING_SIM_ROOT'] = root
         env['STRING_ITERATION'] = str(self.iteration)
         env['STRING_IMAGE_ID'] = self.image_id
@@ -472,7 +484,6 @@ class Image(object):
                 return self
 
         env = self._make_env(random_number=random_number)
-        root = os.environ['STRING_SIM_ROOT']
 
         if self.endpoint:
             source = self.previous_base
@@ -524,9 +535,8 @@ class Image(object):
         if subdir in self._pcoords:
             return self._pcoords[subdir]
         else:
-            root = os.environ['STRING_SIM_ROOT']
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
-                   root=root, branch=self.branch, iteration=self.iteration)
+                   root=root(), branch=self.branch, iteration=self.iteration)
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                    branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
             pcoords = Pcoord(folder=folder + subdir, base=base, fields=fields)
@@ -545,10 +555,9 @@ class Image(object):
 
     def x0(self, subdir='', fields=None):
         if subdir not in self._x0:
-            root = os.environ['STRING_SIM_ROOT']
             branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
-                   root=root, branch=branch, iteration=int(iteration))
+                   root=root(), branch=branch, iteration=int(iteration))
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                    branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
             self._x0[subdir] = Pcoord(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
@@ -681,7 +690,7 @@ class String(object):
     @classmethod
     def from_scratch(cls, image_distance=1.0, branch='AZ', iteration_id=1):
         'Initialized a String from a folder of *.nc files.'
-        n_images = len(glob.glob(os.path.expandvars('$STRING_SIM_ROOT/strings/AZ_000/*.dcd')))
+        n_images = len(glob.glob(root() + '/strings/AZ_000/*.dcd'))
         # TODO sort files and set endpoint properly!
         images = dict()
         for i in range(n_images):
@@ -715,7 +724,7 @@ class String(object):
 
         #print('propagating string, iteration =', self.iteration)
 
-        mkdir(os.path.expandvars('$STRING_SIM_ROOT/strings/%s_%03d/' % (self.branch, self.iteration)))
+        mkdir('%s/strings/%s_%03d/' % (root(), self.branch, self.iteration))
 
         max_workers=1#l
 
@@ -888,8 +897,8 @@ class String(object):
         string['image_distance'] = self.image_distance
         config = {}
         config['strings'] = [string]
-        mkdir(os.path.expandvars('$STRING_SIM_ROOT/strings/%s_%03d/' % (self.branch, self.iteration)))
-        fname_base = os.path.expandvars('$STRING_SIM_ROOT/strings/%s_%03d/plan' % (self.branch, self.iteration))
+        mkdir('%s/strings/%s_%03d/' % (root(), self.branch, self.iteration))
+        fname_base = '%s/strings/%s_%03d/plan' % (root(), self.branch, self.iteration)
         if backup and os.path.exists(fname_base + '.yaml'):
             attempt = 0
             fname_backup = fname_base + '.bak'
@@ -950,7 +959,7 @@ class String(object):
     @classmethod
     def load(cls, branch='AZ', iteration=0):
         'Created a String object by recovering the information form the yaml file in the folder that is given as the argument.'
-        folder = os.path.expandvars('$STRING_SIM_ROOT/strings/%s_%03d' % (branch, iteration))
+        folder = '%s/strings/%s_%03d' % (root(), branch, iteration)
         with open(folder + '/plan.yaml') as f:
             config = yaml.load(f)['strings'][0]
         branch = config['branch']
@@ -1071,8 +1080,10 @@ class String(object):
                     biases_defined.add(names_to_indices[name])
                 else:
                     warnings.warn('field %s in pcoord does not correspond to any ensemble' % name)
-            if len(biases_defined) != K:
-                raise ValueError('Image %s is missing some biased / has too many biases' % im.image_id)
+            if len(biases_defined) > K:
+                raise ValueError('Image %s has too many biases' % im.image_id)
+            if len(biases_defined) < K:
+                raise ValueError('Image %s is missing some biases' % im.image_id)
             assert not np.any(np.isnan(btraj))
             btrajs.append(btraj)
             ttrajs.append(np.zeros(len(x), dtype=int) + names_to_indices[im.image_id])
@@ -1112,7 +1123,7 @@ def init(image_distance=1.0, argv=None):
 
 def load(branch='AZ', offset=0):
     'Find the latest iteration of the string in $STRING_SIM_ROOT/strings/ and recover it from the yaml file.'
-    folder = os.path.expandvars('$STRING_SIM_ROOT/strings/')
+    folder = root() + '/strings/'
     iteration = -1
     for entry in os.listdir(folder):
         splinters =entry.split('_')
