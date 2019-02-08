@@ -76,36 +76,35 @@ def load_plan(fname_plan, sim_id=None):
 
 
 def store(fname_trajectory, fname_colvars_traj, sim_id):
-    root = os.environ['STRING_SIM_ROOT']
     branch, iteration, image_major, image_minor = sim_id.split('_')
     fname_archived = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(  # TODO: also have this as an environment variable...
-                            root=root, branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
+                            root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
                          )
     shutil.copy(fname_trajectory, fname_archived+'.dcd')
     shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
 
 
-def extract(me, fname_dest_coor, fname_dest_box, top):
-    root = os.environ['STRING_SIM_ROOT']
-    #me = next(i for i in plan['images'] if i['id']==sim_id)
+def extract(me, fname_dest_coor, fname_dest_box, top, number):
     prev_id = me['prev_image_id']
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
-                    root=root, branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
+                    root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
                 )
-    frame_index = me['prev_frame_number']
+    if number >= 0:
+        frame_index = number
+    else:
+        frame_index = me['prev_frame_number']
     frame = mdtraj.load_frame(fname_dcd, index=frame_index, top=top)
     save_coor(frame, fname_dest_coor)
     save_xsc(frame, fname_dest_box)
 
 
 def load_image(me, top_fname):
-    root = os.environ['STRING_SIM_ROOT']
     #me = next(i for i in plan['images'] if i['id'] == sim_id)
     prev_id = me['prev_image_id']
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
-        root=root, branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
+        root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
     frame_index = me['prev_frame_number']
     frame = mdtraj.load_frame(fname_dcd, index=frame_index, top=top_fname)
@@ -167,6 +166,8 @@ if __name__ == '__main__':
     extractor = subparser.add_parser('extract', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     extractor.add_argument('--id', metavar='code', default='$STRING_IMAGE_ID',
                            help='simulation ID')
+    extractor.add_argument('--frame', metavar='number', default='-1',
+                           help='frame number to extract')
     extractor.add_argument('--plan', metavar='path', default='$STRING_PLAN',
                            help='(in) path to plan file')
     extractor.add_argument('--colvars_template', metavar='path',
@@ -183,7 +184,7 @@ if __name__ == '__main__':
                            help='(in) file name of topology')
     extractor.add_argument('--image', metavar='path',
                            default='image.pdb',
-                           help='(out) file name for the image coordinated')
+                           help='(out) file name for the umbrella center (image) coordinates')
 
 
     args = parser.parse_args()
@@ -198,7 +199,7 @@ if __name__ == '__main__':
         sim_id = os.path.expandvars(args.id)
         top = os.path.expandvars(args.top)
         me = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=sim_id)
-        extract(me=me, fname_dest_coor=args.coordinates, fname_dest_box=args.box, top=top)
+        extract(me=me, fname_dest_coor=args.coordinates, fname_dest_box=args.box, top=top, number=int(args.frame))
 
         write_colvar(me=me, colvars_file=args.colvars, colvars_template=os.path.expandvars(args.colvars_template))
 

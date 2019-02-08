@@ -5,6 +5,7 @@ mkdir -p work
 cd work
 
 python ../../string_archive.py extract --id AZ_001_000_000 --plan ../strings/AZ_001/plan.yaml
+python ../../string_archive.py extract --id AZ_001_000_000 --plan ../strings/AZ_001/plan.yaml --frame 1 
 
 touch out.colvars.traj out.dcd
 python ../../string_archive.py store --id AZ_001_000_000
