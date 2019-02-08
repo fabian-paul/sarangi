@@ -132,7 +132,7 @@ def write_colvar(colvars_file, colvars_template, me):
     with open(colvars_template) as f:
         config = ''.join(f.readlines()) + '\n'
     for restraint_name, spring_value in me['spring'].items():
-        if restraint_name in me['node']:
+        if 'node' in me and restraint_name in me['node']:
             center_value = me['node'][restraint_name]
         else:
             warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
