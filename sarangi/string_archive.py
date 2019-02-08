@@ -6,7 +6,8 @@ import shutil
 import warnings
 
 
-__all__ = ['root', 'save_coor', 'save_xsc', 'load_plan', 'store', 'extract', 'write_image', 'write_colvar', 'load_image']
+__all__ = ['root', 'save_coor', 'save_xsc', 'load_plan', 'store', 'extract', 'write_image', 'write_colvar',
+           'load_image']
 
 
 def root():
@@ -20,7 +21,8 @@ def root():
         if os.path.exists(os.path.join(folder, '.sarangirc')):
             return folder
         else:
-            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and no .sarangirc file was found.')
+            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and'
+                               ' no .sarangirc file was found.')
 
 
 def is_sim_id(s):
@@ -51,7 +53,7 @@ def save_coor(traj, fname, frame=0):
 def save_xsc(traj, fname, frame=0):
     f = traj[frame]
     s = '# NAMD extended system configuration output file\n'
-    s +='#$LABELS step a_x a_y a_z b_x b_y b_z c_x c_y c_z o_x o_y o_z s_x s_y s_z s_u s_v s_w\n'
+    s += '#$LABELS step a_x a_y a_z b_x b_y b_z c_x c_y c_z o_x o_y o_z s_x s_y s_z s_u s_v s_w\n'
     s += '%d ' % f.time[0]
     #print(f.unitcell_vectors.shape)
     s += '%f %f %f ' % tuple(f.unitcell_vectors[0, 0, :]*10.)
@@ -64,7 +66,6 @@ def save_xsc(traj, fname, frame=0):
 
 
 def load_plan(fname_plan, sim_id=None):
-    #branch, iteration, image_major, image_minor = prev_id.split('_')
     import yaml
     with open(fname_plan) as f:
         plan = yaml.load(f)
@@ -77,9 +78,10 @@ def load_plan(fname_plan, sim_id=None):
 
 def store(fname_trajectory, fname_colvars_traj, sim_id):
     branch, iteration, image_major, image_minor = sim_id.split('_')
-    fname_archived = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(  # TODO: also have this as an environment variable...
-                            root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
-                         )
+    fname_archived = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(
+        # TODO: also have this as an environment variable...
+        root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
+    )
     shutil.copy(fname_trajectory, fname_archived+'.dcd')
     shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
 
@@ -88,8 +90,8 @@ def extract(me, fname_dest_coor, fname_dest_box, top, number):
     prev_id = me['prev_image_id']
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
-                    root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
-                )
+        root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
+    )
     if number >= 0:
         frame_index = number
     else:
@@ -100,7 +102,6 @@ def extract(me, fname_dest_coor, fname_dest_box, top, number):
 
 
 def load_image(me, top_fname):
-    #me = next(i for i in plan['images'] if i['id'] == sim_id)
     prev_id = me['prev_image_id']
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
@@ -112,7 +113,6 @@ def load_image(me, top_fname):
 
 
 def write_image(me, fname_dest_pdb, top_fname):
-    #me = next(i for i in plan['images'] if i['id'] == sim_id)
     if 'atoms_1' not in me:
         warnings.warn('String archivist was instructed to write an image file but the plan does not contain an atom '
                       'reference. Skipping this step.')
@@ -125,25 +125,29 @@ def write_image(me, fname_dest_pdb, top_fname):
 
 def write_colvar(colvars_file, colvars_template, me):
     if not os.path.exists(colvars_template):
-        warnings.warn('String archivist was instructed to write create an colvar input file but not template was found.'
+        warnings.warn('String archivist was instructed to write create an colvars input file but no template was found.'
                       ' Skipping this step.')
         return
 
-    # TODO: if we use RMSD with changing atoms these would have be written as well to the colvar file atoms { atomsset {...} }
-    #me = next(i for i in plan['images'] if i['id']==sim_id)
     with open(colvars_template) as f:
         config = ''.join(f.readlines()) + '\n'
-    for restraint_name, restraint_value in me['node'].items():  # TODO: numpy conversion
-        restraint_value_namd = str(restraint_value).replace('[', '(').replace(']', ')')
-        config += 'harmonic {{\n'\
-                  'name {restraint_name}_restraint\n'\
-                  'colvars {restraint_name}\n'\
-                  'forceconstant {spring}\n'\
-                  'centers {restraint_value}\n}}\n'.format(restraint_name=restraint_name, restraint_value=restraint_value_namd, spring=me['spring'][restraint_name])
+    for restraint_name, spring_value in me['spring'].items():
+        if restraint_name in me['node']:
+            center_value = me['node'][restraint_name]
+        else:
+            warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
+            center_value = '0.0'
+        spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')  # TODO: test me
+        center_value_namd = str(center_value).replace('[', '(').replace(']', ')')  # TODO: test me
+        config += 'harmonic {{\n' \
+                  'name {restraint_name}_restraint\n' \
+                  'colvars {restraint_name}\n' \
+                  'forceconstant {spring}\n' \
+                  'centers {center}\n}}\n'.format(restraint_name=restraint_name,
+                                                  center=center_value_namd,
+                                                  spring=spring_value_namd)
     with open(colvars_file, 'w') as f:
         f.write(config)
-    # add extra stuff, like changing images of the path collective variabel later;
-    # this would involve extracting a frame and converting it to pdb or xyz format (looks like here is the good place to do this)!!!
 
 
 if __name__ == '__main__': 
@@ -206,9 +210,3 @@ if __name__ == '__main__':
         write_image(me=me, fname_dest_pdb=args.image, top_fname=top)
 
     print('end achivist')
-
-#else:
-#    del mdtraj
-#    del os
-#    del shutil
-#    del warnings
