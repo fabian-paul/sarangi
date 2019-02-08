@@ -20,7 +20,7 @@ def load_bias_defs(plan, sim_id, top_fname, keep_dups):
     indices = {}
     identifiers_seen = set()
     print('loading centers')
-    mkdir('%s/strings/%s_%03d/images' % (root(), branch, int(iter_)))
+    mkdir('%s/observables/%s_%03d/images' % (root(), branch, int(iter_)))
     max_index = max([max(image['atoms_1']) for image in plan['images']])
     for image in plan['images']:
         #print(image)
@@ -32,8 +32,8 @@ def load_bias_defs(plan, sim_id, top_fname, keep_dups):
         identifiers_seen.add(identifier)
         # test if pdb was already cached
         randstr = ''.join(random.choice('0123456789abcdef') for _ in range(10))
-        cached_fname = '%s/strings/%s_%03d/images/%s.npy' % (root(), branch, int(iter_), image['id'])
-        cached_fname_tmp = '%s/strings/%s_%03d/images/%s.%s.npy' % (root(), branch, int(iter_), randstr, image['id'])
+        cached_fname = '%s/observables/%s_%03d/images/%s.npy' % (root(), branch, int(iter_), image['id'])
+        cached_fname_tmp = '%s/observables/%s_%03d/images/%s.%s.npy' % (root(), branch, int(iter_), randstr, image['id'])
         if os.path.exists(cached_fname):
             print('loading cached version of umbrella center', image['id'])
             xyz = np.load(cached_fname)
@@ -50,25 +50,42 @@ def load_bias_defs(plan, sim_id, top_fname, keep_dups):
     return centers, indices
 
 
-def compute_rmsd(fname_traj, sim_id, fname_top, cv_name, centers, indices):
+def compute_rmsd(fname_traj, sim_id, fname_top, cv_name, centers, indices, update=False):
 
     dtype = [(name, np.float32) for name in centers.keys()]
 
-    traj = mdtraj.load(fname_traj, top=fname_top)
+    max_index = max([max(idx) for idx in indices.values()])
+    traj = mdtraj.load(fname_traj, top=fname_top, atom_indices=np.arange(max_index + 1))
+    traj_coords = traj.xyz
     n_frames = len(traj)
 
     rmsds = np.zeros(n_frames, dtype=dtype)
 
-    for name, center_coords in centers.items():
-        n_atoms = centers[name].shape[0]
-        coords = traj.atom_slice(indices[name]).xyz #.reshape((n_frames, n_atoms*3))
-        rmsd = np.linalg.norm(coords - center_coords[np.newaxis, :, :], axis=(1, 2)) * n_atoms**-0.5 * 10
-        rmsds[name][:] = rmsd
-
     branch, iter_, _, _ = sim_id.split('_')
-    fname_out = '%s/strings/%s_%03d/%s/%s.npy' % (root(), branch, int(iter_), cv_name, sim_id)
-    print(fname_traj, '->', fname_out)
-    np.save(fname_out, rmsds)
+    fname_obs = '%s/observables/%s_%03d/%s/%s.npy' % (root(), branch, int(iter_), cv_name, sim_id)
+
+    old_rmsds = None
+    old_names = []
+    if update and os.path.exists(fname_obs):
+        temp = np.load(fname_obs)
+        #print('length old, new', len(temp), len(traj))
+        if len(temp) == len(traj):
+            old_rmsds = temp
+            old_names = temp.dtype.names
+
+    for name, center_coords in centers.items():
+        if name in old_names:
+            rmsds[name][:] = old_rmsds[name]
+        else:
+            n_atoms = centers[name].shape[0]
+            #coords = traj.atom_slice(indices[name]).xyz #.reshape((n_frames, n_atoms*3))
+            assert np.all(np.array(indices[name]) <= max_index)
+            coords = traj_coords[:, indices[name], :]
+            rmsd = np.linalg.norm(coords - center_coords[np.newaxis, :, :], axis=(1, 2)) * n_atoms**-0.5 * 10
+            rmsds[name][:] = rmsd
+
+    print(fname_traj, '->', fname_obs)
+    np.save(fname_obs, rmsds)
 
     #fname_out = '%s/strings/%s_%03d/rmsd/%s.dat' % (root(), branch, iter_, sim_id)
     #with open(fname_out, 'w') as f:  # wb?

@@ -10,7 +10,31 @@ __all__ = ['root', 'save_coor', 'save_xsc', 'load_plan', 'store', 'extract', 'wr
 
 
 def root():
-    return os.environ['STRING_SIM_ROOT']
+    if 'STRING_SIM_ROOT' in os.environ:
+        return os.environ['STRING_SIM_ROOT']
+    else:
+        folder = os.path.realpath('.')
+        while not os.path.exists(os.path.join(folder, '.sarangirc')) and folder != '/':
+            # print('looking at', folder)
+            folder = os.path.realpath(os.path.join(folder, '..'))
+        if os.path.exists(os.path.join(folder, '.sarangirc')):
+            return folder
+        else:
+            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and no .sarangirc file was found.')
+
+
+def is_sim_id(s):
+    try:
+        fields = s.split('_')
+        if len(fields) != 4:
+            return False
+        if not fields[0][0].isalpha():
+            return False
+        if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
+            return False
+        return True
+    except Exception as e:
+        return False
 
 
 def save_coor(traj, fname, frame=0):
