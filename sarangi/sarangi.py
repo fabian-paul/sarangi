@@ -328,33 +328,29 @@ class Image(object):
         self._pcoords = {}
         self._x0 = {}
 
-    def copy(self, branch=None, iteration=None, major_id=None, minor_id=None, node=None,
-             spring=None, previous_image_id=None, previous_frame_number=None, atoms_1=None):
+    def copy(self, image_id=None, previous_image_id=None, previous_frame_number=None,
+             node=None, spring=None, endpoint=None, atoms_1=None):
         'Copy the Image object, allowing parameter changes'
-        if iteration is None:
-            iteration = self.iteration
-        if branch is None:
-            branch = self.branch
-        if major_id is None:
-            major_id = self.major_id
-        if minor_id is None:
-            minor_id = self.minor_id
+        if image_id is None:
+            image_id = self.image_id
+        if previous_image_id is None:
+            previous_image_id = self.previous_image_id
+        if previous_frame_number is None:
+            previous_frame_number = self.previous_frame_number
         if node is None:
             node = self.node
         if spring is None:
             spring = self.spring
         if atoms_1 is None:
             atoms_1 = self.atoms_1
-        image_id = '{branch}_{iteration:03d}_{major_id:03d}_{minor_id:03d}'.format(
-                        branch = branch, iteration=iteration, major_id=major_id, minor_id=minor_id
-                    )
-        if previous_image_id is None:
-            previous_image_id=self.previous_image_id
-        if previous_frame_number is None:
-            previous_frame_number=self.previous_frame_number,
-        return Image(image_id=image_id, previous_image_id=previous_image_id, 
+        if endpoint is None:
+            endpoint = self.endpoint
+        #image_id = '{branch}_{iteration:03d}_{major_id:03d}_{minor_id:03d}'.format(
+        #                branch = branch, iteration=iteration, major_id=major_id, minor_id=minor_id
+        #            )
+        return Image(image_id=image_id, previous_image_id=previous_image_id,
                      previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, endpoint=self.endpoint, atoms_1=atoms_1)
+                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1)
 
     @classmethod
     def load(cls, config):
@@ -454,11 +450,11 @@ class Image(object):
 
     def _make_env(self, random_number):
         env = dict()
-        root = root()
-        env['STRING_SIM_ROOT'] = root
+        root_ = root()
+        env['STRING_SIM_ROOT'] = root_
         env['STRING_ITERATION'] = str(self.iteration)
         env['STRING_IMAGE_ID'] = self.image_id
-        env['STRING_PLAN'] = '{root}/strings/{branch}_{iteration:03d}/plan.yaml'.format(root=root, branch=self.branch, iteration=self.iteration)
+        env['STRING_PLAN'] = '{root}/strings/{branch}_{iteration:03d}/plan.yaml'.format(root=root_, branch=self.branch, iteration=self.iteration)
         env['STRING_PREV_IMAGE_ID'] = self.previous_image_id
         env['STRING_PREV_FRAME_NUMBER'] = str(self.previous_frame_number)
         env['STRING_RANDOM'] = str(random_number)
@@ -1041,6 +1037,8 @@ class String(object):
 
     def mbar(self, T=303.15, k_half=1., subdir='rmsd'):
         # TODO: also implement the simpler case with a simple order parameter
+        # TODO: implement some way to provide mbar with am order parameter that is binned (discretized) -> dtrajs
+        # e.g. # discretize='com_distance' (how to select the number of bins?)
         import collections
         import pyemma.thermo
 
