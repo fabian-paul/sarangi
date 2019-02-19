@@ -126,7 +126,7 @@ def dump_structured(array):
     config = {}
     for n in array.dtype.names:
         if len(array.dtype.fields[n][0].shape) == 1:  # vector type
-            config[n] = [float(x) for x in array[n]]
+            config[n] = [float(x) for x in array[n][0]]
         elif len(array.dtype.fields[n][0].shape) == 0:  # scalar type
             config[n] = float(array[n])
         else:
