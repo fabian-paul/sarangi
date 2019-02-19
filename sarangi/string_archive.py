@@ -83,6 +83,9 @@ def store(fname_trajectory, fname_colvars_traj, sim_id):
         root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
     shutil.copy(fname_trajectory, fname_archived+'.dcd')
+    fname_archived = '{root}/observables/{branch}_{iteration:03d}/colvars/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(
+        root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
+    )
     shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
 
 
@@ -137,8 +140,8 @@ def write_colvar(colvars_file, colvars_template, me):
         else:
             warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
             center_value = '0.0'
-        spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')  # TODO: test me
-        center_value_namd = str(center_value).replace('[', '(').replace(']', ')')  # TODO: test me
+        spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
+        center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
         config += 'harmonic {{\n' \
                   'name {restraint_name}_restraint\n' \
                   'colvars {restraint_name}\n' \
