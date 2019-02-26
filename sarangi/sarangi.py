@@ -12,7 +12,12 @@ import time
 from .reparametrization import *
 
 
+__all__ = ['String', 'Image', 'root', 'load', 'main', 'init', 'is_sim_id']
+__author__ = 'Fabian Paul <fab@physik.tu-berlin.de>'
+
+
 def root():
+    'Return absolute path to the root directory of the project.'
     if 'STRING_SIM_ROOT' in os.environ:
         return os.environ['STRING_SIM_ROOT']
     else:
@@ -26,74 +31,15 @@ def root():
             raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and no .sarangirc file was found.')
 
 
-def parse_line(tokens):
-    #print(tokens)
-    in_vector = False
-    dims = []
-    dim = 1
-    values = list()
-    for t in tokens:
-        if t == '(':
-            assert not in_vector
-            in_vector = True
-            dim = 1
-        elif t == ')':
-            assert in_vector
-            in_vector = False
-            dims.append(dim)
-            dim = 1
-        elif t == ',':
-            assert in_vector
-            dim += 1
-        else:
-            values.append(float(t))
-            if not in_vector:
-                dims.append(dim)
-    return values, dims
-
-
-class _Universe(object):
-    def __contains__(self, key):
-        return True
-
-
-def load_colvar(fname, selection=None):
-    rows = []
-    with open(fname) as f:
-        for line in f:
-            tokens = line.split()
-            if tokens[0] == '#':
-                var_names = tokens[1:]
-            else:
-                values, dims = parse_line(tokens)
-                rows.append(values)
-    assert len(var_names) == len(dims)
-    assert len(rows[0]) == sum(dims)
-    data = np.array(rows)
-
-    if selection is None:
-        selection = _Universe()
-    elif isinstance(selection, str):
-        selection = [selection]
-
-    # convert to structured array
-    dtype_def = []
-    for name, dim in zip(var_names, dims):
-        if name in selection:
-            if dim == 1:
-                dtype_def.append((name, np.float64, 1))
-            else:
-                dtype_def.append((name, np.float64, dim))
-    dtype = np.dtype(dtype_def)
-
-    indices = np.concatenate(([0], np.cumsum(dims)))
-    # print(dtype)
-    # print(indices)
-    colgroups = [np.squeeze(data[:, start:stop]) for name, start, stop in zip(var_names, indices[0:-1], indices[1:]) if
-                 name in selection]
-    # for c,n in zip(colgroups, dtype.names):
-    #    print(c.shape, n, dtype.fields[n][0].shape)
-    return np.core.records.fromarrays(colgroups, dtype=dtype)
+def is_sim_id(s):
+    fields = s.split('_')
+    if len(fields) != 4:
+        return False
+    if not fields[0][0].isalpha():
+        return False
+    if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
+        return False
+    return True
 
 
 def mkdir(folder):
@@ -105,6 +51,7 @@ def mkdir(folder):
 
 
 def load_structured(config):
+    'Convert dictionary with numerical values to numpy structured array'
     dtype_def = []
     for name, value in config.items():
         if isinstance(value, list):
@@ -123,6 +70,7 @@ def load_structured(config):
 
 
 def dump_structured(array):
+    'Convert numpy structured array to python dictionary'
     config = {}
     for n in array.dtype.names:
         if len(array.dtype.fields[n][0].shape) == 1:  # vector type
@@ -134,15 +82,81 @@ def dump_structured(array):
     return config
 
 
-def overlap_gaps(matrix, threshold=0.99):
-    import msmtools
-    c = matrix.sum(axis=1)
-    T = matrix / c[:, np.newaxis]
-    n = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
-    return msmtools.analysis.pcca(T, n)
+class _Universe(object):
+    def __contains__(self, key):
+        return True
 
+def recarray_to_ndarray(recarray):
+    n_cols = sum(np.prod(recarray.dtype.fields[name][0].shape, dtype=int) for name in recarray.dtype.names)
+    return recarray.view((float, n_cols))
 
 class Pcoord(object):
+    @staticmethod
+    def parse_line(tokens):
+        # print(tokens)
+        in_vector = False
+        dims = []
+        dim = 1
+        values = list()
+        for t in tokens:
+            if t == '(':
+                assert not in_vector
+                in_vector = True
+                dim = 1
+            elif t == ')':
+                assert in_vector
+                in_vector = False
+                dims.append(dim)
+                dim = 1
+            elif t == ',':
+                assert in_vector
+                dim += 1
+            else:
+                values.append(float(t))
+                if not in_vector:
+                    dims.append(dim)
+        return values, dims
+
+    @staticmethod
+    def load_colvar(fname, selection=None):
+        rows = []
+        with open(fname) as f:
+            for line in f:
+                tokens = line.split()
+                if tokens[0] == '#':
+                    var_names = tokens[1:]
+                else:
+                    values, dims = Pcoord.parse_line(tokens)
+                    rows.append(values)
+        assert len(var_names) == len(dims)
+        assert len(rows[0]) == sum(dims)
+        data = np.array(rows)
+
+        if selection is None:
+            selection = _Universe()
+        elif isinstance(selection, str):
+            selection = [selection]
+
+        # convert to structured array
+        dtype_def = []
+        for name, dim in zip(var_names, dims):
+            # print(name, 'is in selection?', name in selection)
+            if name in selection:
+                if dim == 1:
+                    dtype_def.append((name, np.float64, 1))
+                else:
+                    dtype_def.append((name, np.float64, dim))
+        dtype = np.dtype(dtype_def)
+
+        indices = np.concatenate(([0], np.cumsum(dims)))
+        # print(dtype)
+        # print(indices)
+        colgroups = [np.squeeze(data[:, start:stop]) for name, start, stop in zip(var_names, indices[0:-1], indices[1:])
+                        if name in selection]
+        # for c,n in zip(colgroups, dtype.names):
+        #    print(c.shape, n, dtype.fields[n][0].shape)
+        return np.core.records.fromarrays(colgroups, dtype=dtype)
+
     def __init__(self, folder, base, fields=None):
         # TODO: in principle pcoords can be recomputed from the full trajectories if they are missing
         # TODO: implement this (or steps toward this). How can the computation of observables be automatized in a good way?
@@ -150,8 +164,8 @@ class Pcoord(object):
         self._var = None
         self._cov = None
         fname = folder + '/' + base
-        if os.path.exists(fname + '.colvars.trajs'):
-            self._pcoords = load_colvar(fname + '.colvars.trajs', selection=fields)
+        if os.path.exists(fname + '.colvars.traj'):
+            self._pcoords = Pcoord.load_colvar(fname + '.colvars.traj', selection=fields)
         elif os.path.exists(fname + '.npy'):
             self._pcoords = np.load(fname + '.npy')
         else:
@@ -187,7 +201,14 @@ class Pcoord(object):
             n = self._pcoords.shape[0]
             return self._pcoords.reshape((n, -1))
         else:
-            raise NotImplementedError('as2D not yet implemented for structures array')
+            n = self._pcoords.shape[0]
+            idx = np.cumsum([0] +
+                            [np.prod(self._pcoords.dtype.fields[name][0].shape, dtype=int) for name in self._pcoords.dtype.names])
+            m = idx[-1]
+            x = np.zeros((n, m), dtype=float)
+            for name, start, stop in zip(self._pcoords.dtype.names, idx[0:-1], idx[1:]):
+                x[:, start:stop] = self._pcoords[name]
+            return x
 
     @property
     def mean(self):
@@ -205,6 +226,7 @@ class Pcoord(object):
         return self._cov
 
     def overlap_plane(self, other, indicator='max'):
+        'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
         import sklearn.svm
         clf = sklearn.svm.LinearSVC()
         X_self = self.as2D
@@ -506,7 +528,6 @@ class Image(object):
                     print('run', command, '(', self.job_name, ')')
                     if not dry:
                         subprocess.run(command, shell=True)  # debug
-                        # TODO: delete the job file
                 else:
                     command = 'qsub ' + job_file  # TODO: slurm
                     print('run', command, '(', self.job_name, ')')
@@ -546,8 +567,9 @@ class Image(object):
     #        self._pcoords = load_colvar(self.base + '.colvars.traj')
     #    return self._pcoords
 
-    def overlap_plane(self, other, subdir='', indicator='max'):
-        return self.pcoords(subdir=subdir).overlap_plane(other.pcoords(subdir=subdir), indicator=indicator)
+    def overlap_plane(self, other, subdir='', fields=None, indicator='max'):
+        return self.pcoords(subdir=subdir, fields=fields).overlap_plane(other.pcoords(subdir=subdir, fields=fields),
+                                                                        indicator=indicator)
 
     def x0(self, subdir='', fields=None):
         if subdir not in self._x0:
@@ -610,6 +632,15 @@ class Image(object):
         return Image.bar_1D(x_a=self.get_pcoords(selection=fields), c_a=self.node, k_a=self.spring,
                             x_b=other.get_pcoords(selection=fields), c_b=other.node,  k_b=other.spring, T=T)
 
+    def displacement(self, subdir='', fields=None, rmsd=True):
+        x0 = self.x0(subdir=subdir, fields=fields)
+        mean = self.pcoords(subdir=subdir, fields=fields).mean
+        if rmsd:
+            n_atoms = len(x0.dtype.names)
+        else:
+            n_atoms = 1
+        return np.linalg.norm(recarray_to_ndarray(mean) - recarray_to_ndarray(x0)) * (n_atoms ** -0.5)
+
 
 def load_jobs_PBS():
     from subprocess import Popen, PIPE
@@ -658,12 +689,13 @@ def get_queued_jobs():
             return None  #_Universe()
 
 class String(object):
-    def __init__(self, branch, iteration, images, image_distance, previous):
+    def __init__(self, branch, iteration, images, image_distance, previous, opaque):
         self.branch = branch
         self.iteration = iteration
         self.images = images
         self.image_distance = image_distance
         self.previous = previous
+        self.opaque = opaque
 
     def empty_copy(self, iteration=None, images=None, previous=None):
         'Creates a copy of the current String object. Image array is left empty.'
@@ -674,7 +706,7 @@ class String(object):
         if images is None:
             images = dict()
         return String(branch=self.branch, iteration=iteration, images=images,
-                      image_distance=self.image_distance, previous=previous)
+                      image_distance=self.image_distance, previous=previous, opaque=self.opaque)
 
     def __len__(self):
         return len(self.images)
@@ -882,6 +914,7 @@ class String(object):
 
     def write_yaml(self, backup=True):  # TODO: rename to save_status
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/#iteration'
+        # TODO: write the opaque
         # TODO: think of saving this to the commits folder in general...
         import shutil
         string = {}
@@ -892,6 +925,7 @@ class String(object):
         string['iteration'] = self.iteration
         string['image_distance'] = self.image_distance
         config = {}
+        config.update(self.opaque)
         config['strings'] = [string]
         mkdir('%s/strings/%s_%03d/' % (root(), self.branch, self.iteration))
         fname_base = '%s/strings/%s_%03d/plan' % (root(), self.branch, self.iteration)
@@ -957,13 +991,16 @@ class String(object):
         'Created a String object by recovering the information form the yaml file in the folder that is given as the argument.'
         folder = '%s/strings/%s_%03d' % (root(), branch, iteration)
         with open(folder + '/plan.yaml') as f:
-            config = yaml.load(f)['strings'][0]
-        branch = config['branch']
-        iteration = config['iteration']
-        image_distance = config['image_distance']
-        images_arr = [Image.load(config=img_cfg) for img_cfg in config['images']]
+            config = yaml.load(f)
+        string = config['strings'][0]
+        branch = string['branch']
+        iteration = string['iteration']
+        image_distance = string['image_distance']
+        images_arr = [Image.load(config=img_cfg) for img_cfg in string['images']]
         images = {image.seq:image for image in images_arr}
-        return String(branch=branch, iteration=iteration, images=images, image_distance=image_distance, previous=None)
+        opaque = {key : config[key] for key in config.keys() if key!='strings'}
+        return String(branch=branch, iteration=iteration, images=images, image_distance=image_distance, previous=None,
+                      opaque=opaque)
 
     @property
     def previous_string(self):
@@ -976,12 +1013,12 @@ class String(object):
                 self.previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
         return self.previous
 
-    def overlap(self, subdir='', indicator='max', matrix=False, return_ids=False):
+    def overlap(self, subdir='', fields=None, indicator='max', matrix=False, return_ids=False):
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
                 try:
-                    o[i] = a.overlap_plane(b, subdir=subdir, indicator=indicator)
+                    o[i] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
                 except Exception as e:
                     warnings.warn(str(e))
             if return_ids:
@@ -994,7 +1031,7 @@ class String(object):
                 o[i, i] = 1.
                 for j, b in enumerate(self.images_ordered[i+1:]):
                     try:
-                       o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, indicator=indicator)
+                       o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
                        o[i + j + 1, i] = o[i, i + j + 1]
                     except Exception as e:
                        warnings.warn(str(e))
@@ -1097,6 +1134,15 @@ class String(object):
             xaxis[number] = float(major + '.' + minor)
 
         return mbar, xaxis
+
+    @staticmethod
+    def overlap_gaps(matrix, threshold=0.99):
+        'Indentify the major gaps in the (thermodynamic) overlap matrix'
+        import msmtools
+        c = matrix.sum(axis=1)
+        T = matrix / c[:, np.newaxis]
+        n = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
+        return msmtools.analysis.pcca(T, n)
 
 
 def parse_commandline(argv=None):

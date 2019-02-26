@@ -1,5 +1,6 @@
 from setuptools import setup
 
+
 setup(name='sarangi',
       description='implementation of string method',
       url='https://github.com/fabian-paul/sarangi',
@@ -7,6 +8,7 @@ setup(name='sarangi',
       author_email='fab@physik.tu-berlin.de',
       license='LGPLv3+',
       packages=['sarangi'],
+      install_requires=['mdtraj'],
       zip_safe=False,
       data_files=[('scripts', ['scripts/rmsd.py']),]
       )
