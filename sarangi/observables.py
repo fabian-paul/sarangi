@@ -1,0 +1,73 @@
+import subprocess
+from . import load, root, is_sim_id
+
+
+def main_transform(transform_and_save, cvname='colvars'):
+    import os
+    import argparse
+    parser = argparse.ArgumentParser(description='Compute medoids',
+                                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+
+    parser.add_argument('--id', metavar='code', default='$STRING_IMAGE_ID',
+                        help='simulation ID. If this is left empty or this points to an undefined environment variable,'
+                             ' try to infer from file name.')
+    parser.add_argument('trajectories', metavar='paths', default='out.dcd', nargs='+',
+                        help='(in) file name(s) of the trajectory file(s) to be analyzed')
+    parser.add_argument('--cvname', metavar='identifier', default=cvname,
+                        help='name under which to save results')
+
+    args = parser.parse_args()
+
+    global_sim_id = os.path.expandvars(args.id)
+
+    if '$' not in global_sim_id and global_sim_id != '':
+        if len(args.trajectories) > 1:
+            raise ValueError(
+                'You specified the concrete simulation id %s but supplied multiple input trajectories. '
+                'This is inconsistent.' % global_sim_id)
+
+    for fname_traj in args.trajectories:
+        if '$' in global_sim_id or global_sim_id == '':
+            base_name = os.path.split(os.path.splitext(fname_traj)[0])[1]
+            if is_sim_id(base_name):
+                sim_id = base_name
+            else:
+                raise ValueError('Could not infer id from trajectory name %s.' % base_name)
+        else:
+            sim_id = global_sim_id
+        branch, iter_, _, _ = sim_id.split('_')
+        fname_base_out = '%s/observables/%s_%03d/%s/%s' % (root(), branch, int(iter_), args.cvname, sim_id)
+        transform_and_save(fname_traj=fname_traj, fname_base_out=fname_base_out, sim_id=sim_id)
+        #print(fname_traj, '->', fname_out)
+        #np.save(fname_out, transform(fname_traj, sim_id))
+
+
+def main_update(image_id=None):
+    import os
+    sim_root = root()
+    string = load()
+    observables = string.opaque['observables']
+
+    for observable in observables:
+        for image in string.images.values():
+            env = image._make_env(random_number=0)
+            os.environ.update(env)
+            command = os.path.expandvars(observable.command)
+            if image_id is None or image.image_id == image_id:
+                fname_out = \
+                    '{root}/observables/{branch}_{iteration:03d}/{name}/{image_id}'.format(root=sim_root,
+                                                                                           name=observable.name,
+                                                                                           branch=string.branch,
+                                                                                           iteration=string.iteration,
+                                                                                           image_id=image.image_id)
+                if not os.path.exists(fname_out):
+                    trajectory = image.base + '.dcd'  # TODO: have other file extensions that dcd, where to save this?
+                    if os.path.exists(trajectory):
+                        full_command = \
+                            'command --id {image_id} --cvname {name} {trajectory}'.format(command=command,
+                                                                                          image_id=image.image_id,
+                                                                                          name=observable.name,
+                                                                                          trajectory=trajectory)
+
+                        subprocess.run(full_command, shell=True, env=env)
+
