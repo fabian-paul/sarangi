@@ -10,5 +10,5 @@ setup(name='sarangi',
       packages=['sarangi'],
       install_requires=['mdtraj'],
       zip_safe=False,
-      data_files=[('scripts', ['scripts/rmsd.py']),]
+      data_files=[('scripts', ['scripts/rmsd.py', 'scripts/pdb.py'])]
       )
