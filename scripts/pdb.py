@@ -11,6 +11,7 @@ def pdb(fname_traj, fname_base_out, sim_id):
     top = pdb.top
     atom_indices = top.select('not water and not element Na and not element K and not element Cl')
     frame = mdtraj.load(fname_traj, top=top, atom_indices=atom_indices)[-1]
+    print(fname_traj, '->', fname_base_out + '.pdb')
     frame.save_pdb(fname_base_out + '.pdb')
 
 

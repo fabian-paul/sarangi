@@ -50,24 +50,30 @@ def main_update(image_id=None):
 
     for observable in observables:
         for image in string.images.values():
-            env = image._make_env(random_number=0)
-            os.environ.update(env)
-            command = os.path.expandvars(observable.command)
+            #print('checking:', observable['name'], image.image_id, end=' ')
             if image_id is None or image.image_id == image_id:
-                fname_out = \
-                    '{root}/observables/{branch}_{iteration:03d}/{name}/{image_id}'.format(root=sim_root,
-                                                                                           name=observable.name,
-                                                                                           branch=string.branch,
-                                                                                           iteration=string.iteration,
-                                                                                           image_id=image.image_id)
-                if not os.path.exists(fname_out):
-                    trajectory = image.base + '.dcd'  # TODO: have other file extensions that dcd, where to save this?
-                    if os.path.exists(trajectory):
+                trajectory = image.base + '.dcd'  # TODO: have other file extensions that dcd, where to save this?
+                if os.path.exists(trajectory):
+                    fname_base_out = \
+                        '{root}/observables/{branch}_{iteration:03d}/{name}/{image_id}'.format(root=sim_root,
+                                                                                               name=observable['name'],
+                                                                                               branch=string.branch,
+                                                                                               iteration=string.iteration,
+                                                                                               image_id=image.image_id)
+                    print('checking', fname_base_out, end=' ')
+                    if not os.path.exists(fname_base_out + '.npy') and not os.path.exists(fname_base_out + '.colvars.traj') \
+                       and not os.path.exists(fname_base_out + '.pdb'):
+                        print('not found; making file')
                         full_command = \
-                            'command --id {image_id} --cvname {name} {trajectory}'.format(command=command,
+                            '{command} --id {image_id} --cvname {name} {trajectory}'.format(command=observable['command'],
                                                                                           image_id=image.image_id,
-                                                                                          name=observable.name,
+                                                                                          name=observable['name'],
                                                                                           trajectory=trajectory)
 
+                        print('running', full_command)
+                        env = image._make_env(random_number=0)
+                        env.update(os.environ)
                         subprocess.run(full_command, shell=True, env=env)
+                    else:
+                        print('exist. OK.')
 
