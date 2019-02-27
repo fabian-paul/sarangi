@@ -2,6 +2,7 @@ import numpy as np
 import os
 import glob
 import warnings
+import collections
 import concurrent.futures
 import subprocess
 import yaml  # replace with json (more portable and future proof)
@@ -30,6 +31,7 @@ def root():
         else:
             raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and no .sarangirc file was found.')
 
+# TODO: provide a set of functions/methods that abstract away id and file name generation
 
 def is_sim_id(s):
     fields = s.split('_')
@@ -40,6 +42,21 @@ def is_sim_id(s):
     if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
         return False
     return True
+
+
+def find(items, keys):
+    try:
+        return True, next(x for x in items if x in keys)
+    except StopIteration:
+        return False, None
+
+
+class _Universe(object):
+    def __contains__(self, key):
+        return True
+
+
+All = _Universe()
 
 
 def mkdir(folder):
@@ -82,13 +99,10 @@ def dump_structured(array):
     return config
 
 
-class _Universe(object):
-    def __contains__(self, key):
-        return True
-
 def recarray_to_ndarray(recarray):
     n_cols = sum(np.prod(recarray.dtype.fields[name][0].shape, dtype=int) for name in recarray.dtype.names)
     return recarray.view((float, n_cols))
+
 
 class Pcoord(object):
     @staticmethod
@@ -118,7 +132,7 @@ class Pcoord(object):
         return values, dims
 
     @staticmethod
-    def load_colvar(fname, selection=None):
+    def load_colvar(fname, selection=All):
         rows = []
         with open(fname) as f:
             for line in f:
@@ -133,7 +147,7 @@ class Pcoord(object):
         data = np.array(rows)
 
         if selection is None:
-            selection = _Universe()
+            selection = All
         elif isinstance(selection, str):
             selection = [selection]
 
@@ -157,7 +171,7 @@ class Pcoord(object):
         #    print(c.shape, n, dtype.fields[n][0].shape)
         return np.core.records.fromarrays(colgroups, dtype=dtype)
 
-    def __init__(self, folder, base, fields=None):
+    def __init__(self, folder, base, fields=All):
         # TODO: in principle pcoords can be recomputed from the full trajectories if they are missing
         # TODO: implement this (or steps toward this). How can the computation of observables be automatized in a good way?
         self._mean = None
@@ -548,7 +562,7 @@ class Image(object):
     #def get_pcoords(self, selection=None):
     #    return load_colvar(self.base + '.colvars.traj', selection=selection)
 
-    def pcoords(self, subdir='', fields=None, memoize=True):
+    def pcoords(self, subdir='', fields=All, memoize=True):
         if subdir in self._pcoords:
             return self._pcoords[subdir]
         else:
@@ -567,11 +581,11 @@ class Image(object):
     #        self._pcoords = load_colvar(self.base + '.colvars.traj')
     #    return self._pcoords
 
-    def overlap_plane(self, other, subdir='', fields=None, indicator='max'):
+    def overlap_plane(self, other, subdir='', fields=All, indicator='max'):
         return self.pcoords(subdir=subdir, fields=fields).overlap_plane(other.pcoords(subdir=subdir, fields=fields),
                                                                         indicator=indicator)
 
-    def x0(self, subdir='', fields=None):
+    def x0(self, subdir='', fields=All):
         if subdir not in self._x0:
             branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
@@ -632,7 +646,7 @@ class Image(object):
         return Image.bar_1D(x_a=self.get_pcoords(selection=fields), c_a=self.node, k_a=self.spring,
                             x_b=other.get_pcoords(selection=fields), c_b=other.node,  k_b=other.spring, T=T)
 
-    def displacement(self, subdir='', fields=None, rmsd=True):
+    def displacement(self, subdir='', fields=All, rmsd=True):
         x0 = self.x0(subdir=subdir, fields=fields)
         mean = self.pcoords(subdir=subdir, fields=fields).mean
         if rmsd:
@@ -687,6 +701,8 @@ def get_queued_jobs():
             return get_queued_jobs_PBS()
         except FileNotFoundError:
             return None  #_Universe()
+
+_Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
 
 class String(object):
     def __init__(self, branch, iteration, images, image_distance, previous, opaque):
@@ -1013,7 +1029,7 @@ class String(object):
                 self.previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
         return self.previous
 
-    def overlap(self, subdir='', fields=None, indicator='max', matrix=False, return_ids=False):
+    def overlap(self, subdir='', fields=All, indicator='max', matrix=False, return_ids=False):
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
@@ -1061,17 +1077,79 @@ class String(object):
     #        results.append(x)
     #    return results
 
-    def arclength_projections(self, subdir='', order=0):
+    def arclength_projections(self, subdir='', fields=All, order=0):
         x0s = [image.x0(subdir=subdir) for image in self.images_ordered]
         results = []
         for image in self.images_ordered:
             try:
-                x = image.pcoords(subdir=subdir)
+                x = image.pcoords(subdir=subdir, fields=fields)
                 results.append(x.arclength_projection(x0s, order=order))
             except Exception as e:
                 warnings.warn(str(e))
         return results
 
+
+    def mbar2(self, T=303.15, k_half=1., subdir='rmsd'):
+        import pyemma.thermo
+
+        RT = 1.985877534E-3 * T  # kcal/mol
+
+        # collect unique RMSDs and biases
+        bias_def_to_simid = collections.defaultdict(list)
+        rmsd_def_to_simid = collections.defaultdict(list)
+        for im in self.images.values():
+            bias_def = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1), float(im.spring['RMSD'][0]))
+            bias_def_to_simid[bias_def].append(im.image_id)
+            rmsd_def = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1))
+            rmsd_def_to_simid[rmsd_def].append(im.image_id)
+        K = len(bias_def_to_simid)  # number of unique biases
+        unique_biases = []
+        simid_to_bias_index = {}
+        for ri, (bias_def, bias_simids) in enumerate(bias_def_to_simid.items()):
+            rmsd_def = bias_def[0:-1]
+            unique_biases.append(_Bias(ri=ri, spring=bias_def[-1], rmsd_simids=rmsd_def_to_simid[rmsd_def],
+                                       bias_simids=bias_simids))
+            for simid in bias_simids:
+                simid_to_bias_index[simid] = ri
+
+        btrajs = []
+        ttrajs = []
+        for im in self.images.values():
+            x = im.pcoords(subdir=subdir, memoize=False)
+            btraj = np.zeros((len(x), K)) + np.nan
+            biases_computed = set()
+
+            for bias in unique_biases:
+                found, simid = find(keys=bias.rmsd_simids, items=x._pcoords.dtype.names)
+                if found:
+                     running_bias_index = bias.ri
+                     spring_constant = bias.spring
+                     btraj[:, running_bias_index] = 0.5 * spring_constant * x[simid] ** 2 / RT
+                     biases_computed.add(bias.ri)
+                else:
+                    warnings.warn('Trajectory %s is missing bias with simid %s.' % (im.image_id, bias.simids[0]))
+
+            if len(biases_computed) > K:
+                raise ValueError('Image %s has too many biases' % im.image_id)
+            if len(biases_computed) < K:
+                raise ValueError('Image %s is missing some biases' % im.image_id)
+            assert not np.any(np.isnan(btraj))
+            btrajs.append(btraj)
+            ttrajs.append(np.zeros(len(x), dtype=int) + simid_to_bias_index[im.image_id])
+
+        print('running MBAR')  # TODO: overlap option????
+        mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
+        mbar.estimate((ttrajs, ttrajs, btrajs))
+
+        # prepare "xaxis" to use for plots
+        xaxis = [-1] * len(simid_to_bias_index)
+        for id_, number in simid_to_bias_index.items():
+            _, _, major, minor = id_.split('_')
+            xaxis[number] = float(major + '.' + minor)
+
+        return mbar, xaxis
+
+    # TODO: pre-multiply RMSDs with spring constants?
     def mbar(self, T=303.15, k_half=1., subdir='rmsd'):
         # TODO: also implement the simpler case with a simple order parameter
         # TODO: implement some way to provide mbar with am order parameter that is binned (discretized) -> dtrajs
@@ -1090,15 +1168,18 @@ class String(object):
         # So we have to go back to the actual bias definitions and map them to their possible IDs.
         parameters_to_names = collections.defaultdict(list)  # which bias IDs point to the same bias?
         for im in self.images.values():  # TODO: have a full universal convention for defining biases (e.g. type + params)
-            bias_identifier = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1))  # convert back from numpy?
-            parameters_to_names[bias_identifier].append(im.image_id)
+            bias_def = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1), im.spring[0][0])  # convert back from numpy?
+            parameters_to_names[bias_def].append(im.image_id)
         # TODO: what if the defintions span multiple string iterations or multiple branches?
         K = len(parameters_to_names)  # number of (unique) ensembles
+        print('number of unique biases is', K)
         # generate running indices for all the different biases; generate map from bias IDs to running indices
-        names_to_indices = {}
-        for i, names in enumerate(parameters_to_names.values()):
+        names_to_indices = {}  # index = running index
+        names_to_spring_constants = {}  # index = running index
+        for i, (bias_def, names) in enumerate(parameters_to_names.items()):
             for name in names:
                 names_to_indices[name] = i
+                names_to_spring_constants[name] = bias_def[-1]
 
         btrajs = []
         ttrajs = []
@@ -1111,10 +1192,11 @@ class String(object):
 
             for name in x._pcoords.dtype.names:
                 if name in names_to_indices:
-                    btraj[:, names_to_indices[name]] = k_half * x[name] ** 2 / RT
+                    # loop over all indices
+                    btraj[:, names_to_indices[name]] = 0.5 * names_to_spring_constants[name] * x[name] ** 2 / RT
                     biases_defined.add(names_to_indices[name])
                 else:
-                    warnings.warn('field %s in pcoord does not correspond to any ensemble' % name)
+                    warnings.warn('Trajectory %s contains unused observable %s.' % (im.image_id, name))
             if len(biases_defined) > K:
                 raise ValueError('Image %s has too many biases' % im.image_id)
             if len(biases_defined) < K:
@@ -1139,10 +1221,30 @@ class String(object):
     def overlap_gaps(matrix, threshold=0.99):
         'Indentify the major gaps in the (thermodynamic) overlap matrix'
         import msmtools
+        # TODO: what to do with the diagonal?
+        n = matrix.shape[0]
+        if matrix.shape[1] != n:
+            raise ValueError('matrix must be square')
+        di = np.diag_indices(n)
+        matrix = matrix.copy()
+        matrix[di] = 0
         c = matrix.sum(axis=1)
-        T = matrix / c[:, np.newaxis]
-        n = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
-        return msmtools.analysis.pcca(T, n)
+        matrix[di] = c
+        T = matrix / (2 * c[:, np.newaxis])
+        m = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
+        return msmtools.analysis.pcca(T, m)
+
+    def displacement(self, subdir, fields=All, normalize=True):
+        drift = {}
+        for seq, im in self.images.items():
+            x = im.x0(subdir=subdir, fields=fields)
+            y = im.pcoords(subdir=subdir, fields=fields).mean
+            if normalize and x.ndim == 2 and x.shape[1] == 3:
+                n = x.shape[0]
+            else:
+                n = 1.
+            drift[seq] = np.linalg.norm(x - y) / np.sqrt(n) * 10
+        return drift
 
 
 def parse_commandline(argv=None):

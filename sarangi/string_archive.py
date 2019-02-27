@@ -121,7 +121,7 @@ def write_image(me, fname_dest_pdb, top_fname):
                       'reference. Skipping this step.')
         return
     frame = load_image(me, top_fname)
-    atoms = me['atoms_1']
+    atoms = me['atoms_1']  # TODO: get beta factors from top file and copy to image
     b_factors = [1 if (i + 1) in atoms else 0 for i in range(frame.top.n_atoms)]
     frame.save_pdb(fname_dest_pdb, bfactors=b_factors)
 
