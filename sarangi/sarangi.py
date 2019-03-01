@@ -314,7 +314,6 @@ class Colvars(object):
                 di = 1. #np.sign(i2 - i1)
                 v1 = mid - x
                 v2 = x - minus
-                #v1v2 = np.sum(v1*v2)
                 v1v3 = np.vdot(v1, v3)
                 v1v1 = np.vdot(v1, v1)
                 v2v2 = np.vdot(v2, v2)
@@ -1078,6 +1077,14 @@ class String(object):
 
     def arclength_projections(self, subdir='colvars', order=0, x0=False):
         support_points = [recscalar_to_vector(image.node[0]) for image in self.images_ordered]  # TODO: use node instead?
+        # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
+        x = []
+        for r in support_points:
+
+            if tuple(r) not in x:
+                x.append(tuple(r))
+        support_points = np.array(x)
+
         fields = self.images_ordered[0].node.dtype.names
         results = []
         for image in self.images_ordered:  # TODO: return as dictionary instead
@@ -1092,8 +1099,9 @@ class String(object):
                 warnings.warn(str(e))
         return results
 
-    def mbar(self, subdir='colvars', T=303.15, discretization='colvars'):
-        'Estimate all free energies using MBAR.'
+    def mbar(self, subdir='colvars', T=303.15, disc_subdir='colvars', disc_fields=All, disc_centers=None):
+        'Estimate all free energies using MBAR (when running with conventional order parameters, not RMSD)'
+        import pyemma
         import pyemma.thermo
 
         RT = 1.985877534E-3 * T  # kcal/mol
@@ -1105,24 +1113,40 @@ class String(object):
             if image.spring.dtype.names != fields:
                 raise RuntimeError('Images have varying spring dimensions, cannot use this MBAR wrapper.')
 
-        unique_biases = []  # TODO: finish me
+        # collect all possible biases
+        unique_biases = []
+        for im in self.images_ordered:
+            bias = (im.node, im.spring)
+            if bias not in unique_biases:
+                unique_biases.append(bias)
+        print('found', len(unique_biases), 'unique biases')
 
         btrajs = []
         ttrajs = []
+        dtrajs = []
         K = len(unique_biases)
         for i_im, image in enumerate(self.images.values()):
-            x = image.colvars(sundir=subdir, fiels=fields, memoize=False)
-            # TODO: also prepare a dtraj
-            btraj = np.zeros((len(x), K))
-            ttraj = np.zeros(len(x), dtype=int) + i_im
-            for k, bias in enumerate(unique_biases):
-                btraj[:, k] = Image.potential(x, bias.node, bias.spring) / RT
-            btrajs.append(btraj)
-            ttrajs.append(ttraj)
+            try:
+                x = image.colvars(subdir=subdir, fields=fields, memoize=False)
+                btraj = np.zeros((len(x), K))
+                ttraj = np.zeros(len(x), dtype=int) + i_im
+                for k, bias in enumerate(unique_biases):
+                    node, spring = bias
+                    btraj[:, k] = Image.potential(x=x, node=node, spring=spring) / RT
+                btrajs.append(btraj)
+                ttrajs.append(ttraj)
+
+                if disc_centers is not None:
+                    y = image.colvars(subdir=disc_subdir, fields=disc_fields, memoize=False).as2D
+                    dtrajs.append(pyemma.coordinates.assign_to_centers(y, centers=disc_centers)[0])
+                else:
+                    dtrajs.append(np.zeros(len(x), dtype=int))
+            except FileNotFoundError as e:
+                warnings.warn(str(e))
 
         print('running MBAR')
         mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
-        mbar.estimate((ttrajs, ttrajs, btrajs))
+        mbar.estimate((ttrajs, dtrajs, btrajs))
 
         return mbar
 
