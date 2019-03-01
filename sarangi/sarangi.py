@@ -10,10 +10,11 @@ import tempfile
 import shutil
 import errno
 import time
+from pyemma.util.annotators import deprecated
 from .reparametrization import *
 
 
-__all__ = ['String', 'Image', 'root', 'load', 'main', 'init', 'is_sim_id']
+__all__ = ['String', 'Image', 'root', 'load', 'main', 'init', 'is_sim_id', 'All']
 __author__ = 'Fabian Paul <fab@physik.tu-berlin.de>'
 
 
@@ -33,6 +34,8 @@ def root():
 
 # TODO: provide a set of functions/methods that abstract away id and file name generation
 
+# TODO: provide some plotting functions that takes a dictionary as input with entries image_id -> value
+
 def is_sim_id(s):
     fields = s.split('_')
     if len(fields) != 4:
@@ -51,12 +54,16 @@ def find(items, keys):
         return False, None
 
 
-class _Universe(object):
+class Universe(object):
+    'x in All == True for any x'
     def __contains__(self, key):
         return True
 
+    def __repr__(self):
+        return 'All'
 
-All = _Universe()
+
+All = Universe()
 
 
 def mkdir(folder):
@@ -99,15 +106,17 @@ def dump_structured(array):
     return config
 
 
-def recarray_to_ndarray(recarray):
+def recscalar_to_vector(recarray):
+    'Convert numpy recarray with on entry ("scalar type") to a numpy vector (1-D array)'
+    # TODO: also handle the case where the input is already a numpy vector?
     n_cols = sum(np.prod(recarray.dtype.fields[name][0].shape, dtype=int) for name in recarray.dtype.names)
     return recarray.view((float, n_cols))
 
 
-class Pcoord(object):
+class Colvars(object):
     @staticmethod
     def parse_line(tokens):
-        # print(tokens)
+        'Convert line from colvsars.traj.file to a list of values and a list of vector dimensions'
         in_vector = False
         dims = []
         dim = 1
@@ -133,6 +142,7 @@ class Pcoord(object):
 
     @staticmethod
     def load_colvar(fname, selection=All):
+        'Load a colvars.traj file and convert to numpy recarray (with field names taken form the file header)'
         rows = []
         with open(fname) as f:
             for line in f:
@@ -140,7 +150,7 @@ class Pcoord(object):
                 if tokens[0] == '#':
                     var_names = tokens[1:]
                 else:
-                    values, dims = Pcoord.parse_line(tokens)
+                    values, dims = Colvars.parse_line(tokens)
                     rows.append(values)
         assert len(var_names) == len(dims)
         assert len(rows[0]) == sum(dims)
@@ -172,22 +182,20 @@ class Pcoord(object):
         return np.core.records.fromarrays(colgroups, dtype=dtype)
 
     def __init__(self, folder, base, fields=All):
-        # TODO: in principle pcoords can be recomputed from the full trajectories if they are missing
-        # TODO: implement this (or steps toward this). How can the computation of observables be automatized in a good way?
         self._mean = None
         self._var = None
         self._cov = None
         fname = folder + '/' + base
         if os.path.exists(fname + '.colvars.traj'):
-            self._pcoords = Pcoord.load_colvar(fname + '.colvars.traj', selection=fields)
+            self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
         elif os.path.exists(fname + '.npy'):
-            self._pcoords = np.load(fname + '.npy')
+            self._colvars = np.load(fname + '.npy')
         else:
-            raise RuntimeError('No progress coordinates / colvar file %s found.' % fname)
+            raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)
 
     def _compute_moments(self):
         if self._mean is None or self._var is None:
-            pcoords = self._pcoords
+            pcoords = self._colvars
             if pcoords.dtype.names is None:
                 self._mean = np.mean(pcoords, axis=0)
                 self._var = np.var(pcoords, axis=0)
@@ -204,24 +212,25 @@ class Pcoord(object):
             #self._cov = cov
 
     def __getitem__(self, items):
-        return self._pcoords[items]
+        return self._colvars[items]
 
     def __len__(self):
-        return self._pcoords.shape[0]
+        return self._colvars.shape[0]
 
     @property
     def as2D(self):
-        if self._pcoords.dtype.names is None:
-            n = self._pcoords.shape[0]
-            return self._pcoords.reshape((n, -1))
+        'Convert to plain 2-D numpy array where the first dimension is time'
+        if self._colvars.dtype.names is None:
+            n = self._colvars.shape[0]
+            return self._colvars.reshape((n, -1))
         else:
-            n = self._pcoords.shape[0]
+            n = self._colvars.shape[0]
             idx = np.cumsum([0] +
-                            [np.prod(self._pcoords.dtype.fields[name][0].shape, dtype=int) for name in self._pcoords.dtype.names])
+                            [np.prod(self._colvars.dtype.fields[name][0].shape, dtype=int) for name in self._colvars.dtype.names])
             m = idx[-1]
             x = np.zeros((n, m), dtype=float)
-            for name, start, stop in zip(self._pcoords.dtype.names, idx[0:-1], idx[1:]):
-                x[:, start:stop] = self._pcoords[name]
+            for name, start, stop in zip(self._colvars.dtype.names, idx[0:-1], idx[1:]):
+                x[:, start:stop] = self._colvars[name]
             return x
 
     @property
@@ -271,12 +280,6 @@ class Pcoord(object):
         else:
             return c_norm
 
-    # TODO: implement overlap comutation here
-    # usage Pcoord.overlap(im_1.pcoord('rmsd'), im_2.pcoord('rmsd'))
-    # im_1.pcoord('xyz').cov() ...
-    # maybe allow some memoization ?
-    #
-
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
         #if self.endpoint or other.endpoint:
@@ -288,27 +291,24 @@ class Pcoord(object):
         delta = self.mean - other.mean
         return 0.125*np.dot(delta, np.dot(np.linalg.inv(s), delta)) + half_log_det_s - 0.5*half_log_det_s1 - 0.5*half_log_det_s2
 
-
-    def arclength_projection(self, nodes, order=0):
-        # TODO: also implement a simpler version of this algorithm
-        nodes =  np.array(nodes)
-        if nodes.ndim == 2:
-            axis = 1
-        elif nodes.ndim == 3:
-            axis = (1, 2)
-        else:
-            raise NotImplementedError('Nodes with ndim > 2 are not supported.')
+    @staticmethod
+    def arclength_projection(points, nodes, order=0):
+        if order not in [0, 2]:
+            raise ValueError('order must be 0 or 2, other orders are not implemented')
+        nodes = np.array(nodes)
+        if nodes.ndim != 2:
+            raise NotImplementedError('Nodes with ndim > 1 are not supported.')
         results = []
-        for x in self._pcoords:
-            i = np.argmin(np.linalg.norm(x[np.newaxis, ...]-nodes, axis=axis))
+        for x in points:
+            i = np.argmin(np.linalg.norm(x[np.newaxis, :]-nodes, axis=1))
             if order == 0:
                 results.append(i)
             elif order == 2:
-                if i == 0 or i==len(nodes) - 1:
+                if i == 0 or i == len(nodes) - 1:
                     continue
-                mid = nodes[i]
-                plus = nodes[i + 1]
-                minus = nodes[i - 1]
+                mid = nodes[i, :]
+                plus = nodes[i + 1, :]
+                minus = nodes[i - 1, :]
                 v3 = plus - mid
                 v3v3 = np.vdot(v3, v3)
                 di = 1. #np.sign(i2 - i1)
@@ -324,32 +324,30 @@ class Pcoord(object):
 
     def closest_point(self, x):
         'Find the replica which is closest to x in order parameters space.'
-        if self._pcoords.ndim == 2:
+        if self._colvars.ndim == 2:
             axis = 1
-        elif self._pcoords.ndim == 3:
+        elif self._colvars.ndim == 3:
             axis = (1, 2)
         else:
             raise NotImplementedError('Nodes with ndim > 2 are not supported.')
-        dist = np.linalg.norm(self._pcoords - x[np.newaxis, ...], axis=axis)
+        dist = np.linalg.norm(self._colvars - x[np.newaxis, ...], axis=axis)
         i = np.argmin(dist)
-        return {'i':int(i), 'd':dist[i], 'x':self._pcoords[i]}
+        return {'i':int(i), 'd':dist[i], 'x':self._colvars[i]}
 
-    #def arclength_projection(self, plus, minus):
-    #    mid = self.mean
-    #    v3 = plus - mid
-    #    v3v3 = np.vdot(v3, v3)
-    #    di = 1. #np.sign(i2 - i1)
-    #    results = []
-    #    for x in self._pcoords:
-    #        v1 = mid - x
-    #        v2 = x - minus
-    #        #v1v2 = np.sum(v1*v2)
-    #        v1v3 = np.vdot(v1, v3)
-    #        v1v1 = np.vdot(v1, v1)
-    #        v2v2 = np.vdot(v2, v2)
-    #        results.append(
-    #             (di*(v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3 - v3v3) / (2*v3v3))
-    #    return results
+    def distance_of_mean(self, other, rmsd=True):
+        'Compute the distance between the mean of this window and the mean of some other window.'
+        if rmsd:
+            n_atoms = len(self._colvars.dtype.names)
+            # TODO: assert the each atoms entry has dimension 3
+        else:
+            n_atoms = 1
+        return np.linalg.norm(recscalar_to_vector(self.mean) - recscalar_to_vector(other.mean)) * (n_atoms ** -0.5)
+
+    @property
+    def fields(self):
+        'Variable names (from colvars.traj header or npy file)'
+        return self._colvars.dtype.names
+
 
 class Image(object):
     def __init__(self, image_id, previous_image_id, previous_frame_number,
@@ -460,6 +458,7 @@ class Image(object):
 
     @property
     def seq(self):
+        'id_major.in_minor as a floating point number'
         return float(str(self.id_major) + '.' + str(self.id_minor))
 
     #def id_str(self, arclength):
@@ -517,114 +516,87 @@ class Image(object):
 
         env = self._make_env(random_number=random_number)
 
-        if self.endpoint:
-            source = self.previous_base
-            dest = self.base
-            shutil.copy(source + '.dcd', dest + '.dcd')
-            if os.path.exists(source + '.colvars.traj'):  # if order were already computed
-                shutil.copy(source + '.colvars.traj', dest + '.colvars.traj')  # copy them
-            #else:  # compute the order parameters
-            #    default_env = dict(os.environ)
-            #    default_env.update(env)
-            #    subprocess.run('python $STRING_SIM_ROOT/string_scripts/pcoords.py $STRING_ARCHIVE.nc > $STRING_ARCHIVE.dat',
-            #                   shell=True, env=default_env)  # TODO: abstract this as a method
+        # if self.endpoint:
+        #     source = self.previous_base
+        #     dest = self.base
+        #     shutil.copy(source + '.dcd', dest + '.dcd')
+        #     if os.path.exists(source + '.colvars.traj'):  # if order were already computed
+        #         shutil.copy(source + '.colvars.traj', dest + '.colvars.traj')  # copy them
+        #     #else:  # compute the order parameters
+        #     #    default_env = dict(os.environ)
+        #     #    default_env.update(env)
+        #     #    subprocess.run('python $STRING_SIM_ROOT/string_scripts/pcoords.py $STRING_ARCHIVE.nc > $STRING_ARCHIVE.dat',
+        #     #                   shell=True, env=default_env)  # TODO: abstract this as a method
 
-        else:  # normal (intermediate string point)
-            if run_locally:
-                job_file = self._make_job_file(env)
-                print('run', job_file, '(', self.job_name, ')')
+        # else:  # normal (intermediate string point)
+        if run_locally:
+            job_file = self._make_job_file(env)
+            print('run', job_file, '(', self.job_name, ')')
+            if not dry:
+                subprocess.run('bash ' + job_file, shell=True)  # directly execute the job file
+        else:
+            job_file = self._make_job_file(env)
+            if wait:
+                command = 'qsub --wait ' + job_file  # TODO: slurm (sbatch)
+                print('run', command, '(', self.job_name, ')')
                 if not dry:
-                    subprocess.run('bash ' + job_file, shell=True)  # directly execute the job file
+                    subprocess.run(command, shell=True)  # debug
             else:
-                job_file = self._make_job_file(env)
-                if wait:
-                    command = 'qsub --wait ' + job_file  # TODO: slurm
-                    print('run', command, '(', self.job_name, ')')
-                    if not dry:
-                        subprocess.run(command, shell=True)  # debug
-                else:
-                    command = 'qsub ' + job_file  # TODO: slurm
-                    print('run', command, '(', self.job_name, ')')
-                    if not dry:
-                        subprocess.run(command, shell=True)  # debug
+                command = 'qsub ' + job_file  # TODO: slurm (sbatch)
+                print('run', command, '(', self.job_name, ')')
+                if not dry:
+                    subprocess.run(command, shell=True)  # debug
 
         return self
-
 
     def closest_replica(self, x):  # TODO: rewrite!!!
         # TODO: offer option to search for a replica that is closest to a given plane
         'Find the replica which is closest to x in order parameters space.'
         assert self.propagated
-        dist = np.linalg.norm(self.pcoords - x[np.newaxis, :], axis=1)
+        dist = np.linalg.norm(self.colvars - x[np.newaxis, :], axis=1)
         i = np.argmin(dist)
         return int(i), dist[i]
 
-    #def get_pcoords(self, selection=None):
-    #    return load_colvar(self.base + '.colvars.traj', selection=selection)
-
-    def pcoords(self, subdir='', fields=All, memoize=True):
-        if subdir in self._pcoords:
-            return self._pcoords[subdir]
+    def colvars(self, subdir='colvars', fields=All, memoize=True):
+        'Return Colvars object for the set of collective variables saved in a given subdir and limited to given fields'
+        if isinstance(fields, list):
+            fields = tuple(fields)
+        if (subdir, fields) in self._pcoords:
+            return self._pcoords[(subdir, fields)]
         else:
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
                    root=root(), branch=self.branch, iteration=self.iteration)
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                    branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
-            pcoords = Pcoord(folder=folder + subdir, base=base, fields=fields)
+            pcoords = Colvars(folder=folder + subdir, base=base, fields=fields)
             if memoize:
-                self._pcoords[subdir] = pcoords
+                self._pcoords[(subdir, fields)] = pcoords
             return pcoords
-    #    # TODO: sometime the relevant coordinates are not in the colvar file put elsewhere (pcoord file?)
-    #    # TODO: come up with way of recomputing colvars on request (TODO: think about the network)
-    #    #assert self.propagated
-    #    if self._pcoords is None:
-    #        self._pcoords = load_colvar(self.base + '.colvars.traj')
-    #    return self._pcoords
 
-    def overlap_plane(self, other, subdir='', fields=All, indicator='max'):
-        return self.pcoords(subdir=subdir, fields=fields).overlap_plane(other.pcoords(subdir=subdir, fields=fields),
+    def overlap_plane(self, other, subdir='colvars', fields=All, indicator='max'):
+        'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
+        return self.colvars(subdir=subdir, fields=fields).overlap_plane(other.colvars(subdir=subdir, fields=fields),
                                                                         indicator=indicator)
 
-    def x0(self, subdir='', fields=All):
+    def x0(self, subdir='colvars', fields=All):  # TODO: have this as a Colvars object?
+        'Get the initial position for the simualtion in colvar space.'
         if subdir not in self._x0:
             branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
                    root=root(), branch=branch, iteration=int(iteration))
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                    branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
-            self._x0[subdir] = Pcoord(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
+            self._x0[subdir] = Colvars(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
         return self._x0[subdir]
 
-    @staticmethod
-    def u(x, c, k, T=303.15):
-
-        pot = np.zeros(x.shape[0])
-        for n in k.dtype.names:
-            pot += 0.5*k[n]*(x[n] - c[n])**2  # TODO: handle the case when x is a vector # TODO: correct units!!!
-        return pot
-
-    @staticmethod
-    def bar_1D(x_a, c_a, k_a, x_b, c_b, k_b, T=303.15):
-        import pyemma
-        RT = 1.985877534E-3*T
-        btrajs = [np.zeros((x_a.shape[0], 2)), np.zeros((x_b.shape[0], 2))]
-        btrajs[0][:, 0] = Image.u(x_a, c_a, k_a)/RT
-        btrajs[0][:, 1] = Image.u(x_a, c_b, k_b)/RT
-        btrajs[1][:, 0] = Image.u(x_b, c_a, k_a)/RT
-        btrajs[1][:, 1] = Image.u(x_b, c_b, k_b)/RT
-        ttrajs = [np.zeros(x_a.shape[0], dtype=int), np.ones(x_b.shape[0], dtype=int)]
-        mbar = pyemma.thermo.MBAR()
-        mbar.estimate((ttrajs, ttrajs, btrajs))
-        return mbar.f_therm[0] - mbar.f_therm[1]
-        #return mbar.free_energies
-
-    def bar(self, other, T=303.15):
+    @deprecated
+    def bar_RMSD(self, other, T=303.15):
         import pyemma
         RT = 1.985877534E-3 * T  # kcal/mol
         id_self = '%03d_%03d' % (self.id_major, self.id_minor)
         id_other = '%03d_%03d' % (other.id_major, other.id_minor)
-        p_self = self.pcoords(subdir='RMSD')
-        p_other = other.pcoords(subdir='RMSD')
+        p_self = self.colvars(subdir='RMSD')
+        p_other = other.colvars(subdir='RMSD')
         btrajs = [np.zeros((len(p_self), 2)), np.zeros((len(p_other), 2))]
         btrajs[0][:, 0] = p_self[id_self][:]**2 * 5.0 / RT
         btrajs[0][:, 1] = p_self[id_other][:]**2 * 5.0 / RT
@@ -635,25 +607,57 @@ class Image(object):
         mbar.estimate((ttrajs, ttrajs, btrajs))
         return mbar.f_therm[0] - mbar.f_therm[1]
 
+    @staticmethod
+    def potential(x, node, spring):
+        'Compute the bias potential parametrized by node and spring evaluated along the possibly multidimensional order parameter x.'
+        u = None
+        for name in x.fields:
+            #print('x', x[name].shape)
+            #print('spring', spring[name].shape)
+            #print('node', node[name].shape)
+            u_part = spring[name] * np.linalg.norm(x[name] - node[name], axis=1)**2
+            assert u_part.ndim == 1
+            #print('pot', u_part.shape, u_part.ndim)
+            if u is None:
+                u = u_part
+            else:
+                u += u_part
+        return u
+    
+    def bar(self, other, subdir='colvars', T=303.15):
+        'Compute thermodynamic free energy difference between this window (self) and other using BAR.'
+        import pyemma
+        RT = 1.985877534E-3 * T  # kcal/mol
+        fields = self.node.dtype.names
+        my_x = self.colvars(subdir=subdir, fields=fields)
+        other_x = other.colvars(subdir=subdir, fields=fields)
+        btrajs = [np.zeros((len(my_x), 2)), np.zeros((len(other_x), 2))]
+        btrajs[0][:, 0] = Image.potential(my_x, self.node, self.spring) / RT
+        btrajs[0][:, 1] = Image.potential(my_x, other.node, other.spring) / RT
+        btrajs[1][:, 0] = Image.potential(other_x, self.node, self.spring) / RT
+        btrajs[1][:, 1] = Image.potential(other_x, other.node, other.spring) / RT
+        ttrajs = [np.zeros(len(my_x), dtype=int), np.ones(len(other_x), dtype=int)]
+        mbar = pyemma.thermo.MBAR()
+        mbar.estimate((ttrajs, ttrajs, btrajs))
+        return mbar.f_therm[0] - mbar.f_therm[1]
 
-    def fel(self, other, method='bar', T=303.15):
-        assert method == 'bar'
-        #if not self.propagated:
-        #    raise RuntimeError('String not completely propagated. Can\'t compute free energies')
-        # TODO: concatenate all repeats
-        fields = self.spring.dtype.names
-        # assert all(fields == im_2.spring.dtype.names)  # FIXME
-        return Image.bar_1D(x_a=self.get_pcoords(selection=fields), c_a=self.node, k_a=self.spring,
-                            x_b=other.get_pcoords(selection=fields), c_b=other.node,  k_b=other.spring, T=T)
-
-    def displacement(self, subdir='', fields=All, rmsd=True):
-        x0 = self.x0(subdir=subdir, fields=fields)
-        mean = self.pcoords(subdir=subdir, fields=fields).mean
+    def displacement(self, subdir='colvars', fields=All, rmsd=True, origin='node'):
+        'Compute the difference between the windows\'s mean and its initial position in order parameter space'
+        if origin == 'x0':
+            o = self.x0(subdir=subdir, fields=fields)
+        elif origin == 'node':
+            if isinstance(fields, Universe):
+                o = self.node
+            else:
+                o = self.node[fields]  # TODO: FIXME
+        else:
+            raise ValueError('origin must be either "node" or "x0"')
+        mean = self.colvars(subdir=subdir, fields=fields).mean
         if rmsd:
-            n_atoms = len(x0.dtype.names)
+            n_atoms = len(o.dtype.names)
         else:
             n_atoms = 1
-        return np.linalg.norm(recarray_to_ndarray(mean) - recarray_to_ndarray(x0)) * (n_atoms ** -0.5)
+        return np.linalg.norm(recscalar_to_vector(mean) - recscalar_to_vector(o)) * (n_atoms ** -0.5)
 
 
 def load_jobs_PBS():
@@ -686,8 +690,6 @@ def get_queued_jobs_SLURM():
     from subprocess import Popen, PIPE    
     import getpass
     user = getpass.getuser()
-    #with os.popen('squeue -o %j -h -u ' + user) as f:  #TODO qstat -u 
-    #    jobs = f.readlines()
     process = Popen(['squeue', '-o', '%j', '-h', '-u', user], stdout=PIPE, stderr=PIPE)
     stdout, stderr = process.communicate()    
     return [j.strip() for j in stdout]
@@ -700,7 +702,7 @@ def get_queued_jobs():
         try:
             return get_queued_jobs_PBS()
         except FileNotFoundError:
-            return None  #_Universe()
+            return None  #_All
 
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
 
@@ -725,10 +727,12 @@ class String(object):
                       image_distance=self.image_distance, previous=previous, opaque=self.opaque)
 
     def __len__(self):
+        'Number of images'
         return len(self.images)
 
     @property
     def images_ordered(self):
+        'Images ordered by ID, where id_major.id_minor is interpreted as a flaoting point number'
         return [self.images[key] for key in sorted(self.images.keys())]
 
     @classmethod
@@ -749,7 +753,7 @@ class String(object):
                                queued_jobs=queued_jobs, run_locally=run_locally, dry=dry)
 
     def propagate(self, wait=False, run_locally=False, dry=False):
-        '''Propagated the String (one iteration). Returns a modified copy.'''
+        'Propagated the String (one iteration). Returns a modified copy.'
         if self.propagated:
             return self  # TODO: warn???
         # Does not increase the iteration number
@@ -782,12 +786,14 @@ class String(object):
         return self.empty_copy(images=propagated_images)
 
     def connected(self, threshold=0.1):
+        'Test if all images are overlapping'
         if not self.propagated:
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
-    def bisect_at(self, i, j=None, subdir='', where='mean', search='string'):
+    def bisect_at(self, i, j=None, subdir='colvars', where='mean', search='string', fields=All):
         # TODO: think more about the parameters ...
+        # TODO
         if j is None:
             j += i + 1
         if isinstance(i, int):
@@ -803,17 +809,19 @@ class String(object):
         else:
             raise ValueError('parameter j has incorrect type')
         if where == 'mean':
-            x = (p.pcoords(subdir=subdir).mean + q.pcoords(subdir=subdir).mean) * 0.5
+            x = (p.colvars(subdir=subdir, field=fields).mean + q.colvars(subdir=subdir, field=fields).mean) * 0.5
         elif where == 'x0':
-            x = (p.x0(subdir=subdir) + q.x0(subdir=subdir)) * 0.5
+            x = (p.x0(subdir=subdir, field=fields) + q.x0(subdir=subdir, field=fields)) * 0.5
+        elif where == 'node':
+            x = (p.node(subdir=subdir, field=fields) + q.node(subdir=subdir, field=fields)) * 0.5
         elif where == 'plane':
             raise NotImplementedError('bisection at SVM plane not implemented yet')
         else:
             raise ValueError('Unrecognized value "%s" for option "where"' % where)
 
         if search == 'points':
-            query_p = p.pcoords(subdir=subdir).closest_point(x)
-            query_q = q.pcoords(subdir=subdir).closest_point(x)
+            query_p = p.colvars(subdir=subdir).closest_point(x)
+            query_q = q.colvars(subdir=subdir).closest_point(x)
             if query_p['d'] < query_q['d']:
                 print('best distance is', query_p['d'])
                 best_image = p
@@ -823,7 +831,7 @@ class String(object):
                 best_image = q
                 best_step = query_q['i']
         elif search == 'string':
-            responses = [(im, im.pcoords(subdir=subdir).closest_point(x)) for im in self.images.values()]
+            responses = [(im, im.colvars(subdir=subdir).closest_point(x)) for im in self.images.values()]
             best_idx = np.argmin([r[1]['d'] for r in responses])
             best_image = responses[best_idx][0]
             best_step = responses[best_idx][1]['i']
@@ -850,7 +858,7 @@ class String(object):
         #best = int(np.argmin([r[1] for r in results]))
         #return images[best], results[best][0], results[best][1]
 
-    def bisect(self, subdir=''):
+    def bisect(self, subdir='colvars'):
         raise NotImplementedError('This is broken')
 
         ov_max, idx = self.overlap(subdir=subdir, indicator='max', return_ids=True)
@@ -912,6 +920,7 @@ class String(object):
         return all(image.propagated for image in self.images.values())
 
     def ribbon(self, run_locally):
+        'String that show the status of all simulations graphically.'
         if run_locally:
             queued_jobs = []
         else:
@@ -928,9 +937,8 @@ class String(object):
                 rib += '.'  # not submitted, only defined
         return rib
 
-    def write_yaml(self, backup=True):  # TODO: rename to save_status
-        'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/#iteration'
-        # TODO: write the opaque
+    def write_yaml(self, backup=True, message=None):  # TODO: rename to save_status
+        'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/strings/<branch>_<iteration>'
         # TODO: think of saving this to the commits folder in general...
         import shutil
         string = {}
@@ -943,6 +951,8 @@ class String(object):
         config = {}
         config.update(self.opaque)
         config['strings'] = [string]
+        if message is not None:
+            config['message'] = message
         mkdir('%s/strings/%s_%03d/' % (root(), self.branch, self.iteration))
         fname_base = '%s/strings/%s_%03d/plan' % (root(), self.branch, self.iteration)
         if backup and os.path.exists(fname_base + '.yaml'):
@@ -969,7 +979,7 @@ class String(object):
         new_string = self.empty_copy(iteration=self.iteration + 1, previous=self)
 
         start = self.images[0]
-        new_string.images[0] = start.copy(branch=self.branch, iteration=self.iteration + 1, node=start.pcoords[0, :], major_id=0, minor_id=0)  # add endpoint
+        new_string.images[0] = start.copy(branch=self.branch, iteration=self.iteration + 1, node=start.colvars[0, :], major_id=0, minor_id=0)  # add endpoint
 
         for i_node, x in enumerate(nodes):
             # we have to convert the unrealized nodes to realized frames
@@ -982,7 +992,7 @@ class String(object):
         end = self.images[max(self.images)]
         n_end = len(new_string.images)
         new_string.images[n_end] = \
-            end.copy(branch=self.branch, iteration=self.iteration + 1, node=end.pcoords[0, :], major_id=n_end, minor_id=0)  # add endpoint
+            end.copy(branch=self.branch, iteration=self.iteration + 1, node=end.colvars[0, :], major_id=n_end, minor_id=0)  # add endpoint
 
         assert new_string.images[0].endpoint and new_string.images[max(new_string.images)].endpoint
 
@@ -1020,22 +1030,24 @@ class String(object):
 
     @property
     def previous_string(self):
+        'Attempt to load previous iteration of the string'
         if self.previous is None:
             if self.iteration > 1:
                 print('loading -1')
                 self.previous = String.load(branch=self.branch, iteration=self.iteration - 1)
             else:
-                print('loading *')
+                print('loading *')  # TODO: this seems currently broken
                 self.previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
         return self.previous
 
-    def overlap(self, subdir='', fields=All, indicator='max', matrix=False, return_ids=False):
+    def overlap(self, subdir='colvars', fields=All, indicator='max', matrix=False, return_ids=False):
+        'Compute the overlap (SVM) between images of the string'
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
                 try:
                     o[i] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
-                except Exception as e:
+                except FileNotFoundError as e:
                     warnings.warn(str(e))
             if return_ids:
                 return o, [(p.seq, q.seq) for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:])]
@@ -1044,52 +1056,78 @@ class String(object):
         else:
             o = np.zeros((len(self.images_ordered), len(self.images_ordered))) + np.nan
             for i, a in enumerate(self.images_ordered[0:-1]):
-                o[i, i] = 1.
+                o[i, i] = 0.
                 for j, b in enumerate(self.images_ordered[i+1:]):
                     try:
                        o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
                        o[i + j + 1, i] = o[i, i + j + 1]
-                    except Exception as e:
+                    except FileNotFoundError as e:
                        warnings.warn(str(e))
-            o[-1, -1] = 1.
+            o[-1, -1] = 0.
             return o
 
-    def fel(self, T=303.15):
+    def fel(self, subdir='colvars', T=303.15):
+        'Compute an estimate of the free energy along the string, by running BAR for adjacent images'
         f = np.zeros(len(self.images) - 1) + np.nan
         for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
-            #if a.propagated and b.propagated:
             try:
-                f[i] = a.fel(b, T=T)
-            except Exception as e:
+                f[i] = a.bar(b, subdir=subdir, T=T)
+            except FileNotFoundError as e:
                 warnings.warn(str(e))
         return f
 
-        # TODO: implement simple overlap ... add selection of order parameters!
-
-    #def arclength_projections(self, subdir=''):
-    #    io = self.images_ordered
-    #    results = []
-    #    for a, b, c, i in zip(io[0:-2], io[1:-1], io[2:], np.arange(len(io) - 2)):
-    #        # TODO: could also use center? But this would be confusing here
-    #        plus = a.pcoords(subdir=subdir).mean
-    #        minus = b.pcoords(subdir=subdir).mean
-    #        x = i + b.pcoords(subdir=subdir).projection(plus, minus)
-    #        results.append(x)
-    #    return results
-
-    def arclength_projections(self, subdir='', fields=All, order=0):
-        x0s = [image.x0(subdir=subdir) for image in self.images_ordered]
+    def arclength_projections(self, subdir='colvars', order=0, x0=False):
+        support_points = [recscalar_to_vector(image.node[0]) for image in self.images_ordered]  # TODO: use node instead?
+        fields = self.images_ordered[0].node.dtype.names
         results = []
-        for image in self.images_ordered:
+        for image in self.images_ordered:  # TODO: return as dictionary instead
             try:
-                x = image.pcoords(subdir=subdir, fields=fields)
-                results.append(x.arclength_projection(x0s, order=order))
-            except Exception as e:
+                if x0:
+                    x = image.x0(subdir=subdir, fields=fields)
+                    results.append(Colvars.arclength_projection([recscalar_to_vector(x)], support_points, order=order))
+                else:
+                    x = image.colvars(subdir=subdir, fields=fields)
+                    results.append(Colvars.arclength_projection(x.as2D, support_points, order=order))
+            except FileNotFoundError as e:
                 warnings.warn(str(e))
         return results
 
+    def mbar(self, subdir='colvars', T=303.15, discretization='colvars'):
+        'Estimate all free energies using MBAR.'
+        import pyemma.thermo
 
-    def mbar2(self, T=303.15, k_half=1., subdir='rmsd'):
+        RT = 1.985877534E-3 * T  # kcal/mol
+
+        fields = self.images_ordered[0].node.dtype.names
+        for image in self.images.values():
+            if image.node.dtype.names != fields:
+                raise RuntimeError('Images have varying node dimensions, cannot use this MBAR wrapper.')
+            if image.spring.dtype.names != fields:
+                raise RuntimeError('Images have varying spring dimensions, cannot use this MBAR wrapper.')
+
+        unique_biases = []  # TODO: finish me
+
+        btrajs = []
+        ttrajs = []
+        K = len(unique_biases)
+        for i_im, image in enumerate(self.images.values()):
+            x = image.colvars(sundir=subdir, fiels=fields, memoize=False)
+            # TODO: also prepare a dtraj
+            btraj = np.zeros((len(x), K))
+            ttraj = np.zeros(len(x), dtype=int) + i_im
+            for k, bias in enumerate(unique_biases):
+                btraj[:, k] = Image.potential(x, bias.node, bias.spring) / RT
+            btrajs.append(btraj)
+            ttrajs.append(ttraj)
+
+        print('running MBAR')
+        mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
+        mbar.estimate((ttrajs, ttrajs, btrajs))
+
+        return mbar
+
+    def mbar_RMSD(self, T=303.15, subdir='rmsd'):
+        'For RMSD-type bias: Estimate all free energies using MBAR'
         import pyemma.thermo
 
         RT = 1.985877534E-3 * T  # kcal/mol
@@ -1115,7 +1153,7 @@ class String(object):
         btrajs = []
         ttrajs = []
         for im in self.images.values():
-            x = im.pcoords(subdir=subdir, memoize=False)
+            x = im.colvars(subdir=subdir, memoize=False)
             btraj = np.zeros((len(x), K)) + np.nan
             biases_computed = set()
 
@@ -1149,9 +1187,10 @@ class String(object):
 
         return mbar, xaxis
 
-    # TODO: pre-multiply RMSDs with spring constants?
-    def mbar(self, T=303.15, k_half=1., subdir='rmsd'):
-        # TODO: also implement the simpler case with a simple order parameter
+    @deprecated
+    def mbar_RMSD_old(self, T=303.15, subdir='rmsd'):
+        'For RMSD-type bias: Estimate all free energies using MBAR'
+        # TODO: also implement the simpler case with a "simple" (possibly multidimensional) order parameter
         # TODO: implement some way to provide mbar with am order parameter that is binned (discretized) -> dtrajs
         # e.g. # discretize='com_distance' (how to select the number of bins?)
         import collections
@@ -1185,7 +1224,7 @@ class String(object):
         ttrajs = []
         for im in self.images.values():
             # print('loading', im.image_id)
-            x = im.pcoords(subdir=subdir, memoize=False)
+            x = im.colvars(subdir=subdir, memoize=False)
             # print('done loading')
             btraj = np.zeros((len(x), K)) + np.nan  # shape??
             biases_defined = set()
@@ -1205,7 +1244,7 @@ class String(object):
             btrajs.append(btraj)
             ttrajs.append(np.zeros(len(x), dtype=int) + names_to_indices[im.image_id])
 
-        print('running MBAR')  # TODO: overlap option????
+        print('running MBAR')
         mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
         mbar.estimate((ttrajs, ttrajs, btrajs))
 
@@ -1234,17 +1273,23 @@ class String(object):
         m = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
         return msmtools.analysis.pcca(T, m)
 
-    def displacement(self, subdir, fields=All, normalize=True):
+    def displacement(self, subdir='colvars', fields=All, rmsd=True, origin='node'):
         drift = {}
         for seq, im in self.images.items():
-            x = im.x0(subdir=subdir, fields=fields)
-            y = im.pcoords(subdir=subdir, fields=fields).mean
-            if normalize and x.ndim == 2 and x.shape[1] == 3:
-                n = x.shape[0]
-            else:
-                n = 1.
-            drift[seq] = np.linalg.norm(x - y) / np.sqrt(n) * 10
+            try:
+                drift[seq] = im.displacement(subdir=subdir, fields=fields, rmsd=rmsd, origin=origin)
+            except FileNotFoundError as e:
+                warnings.warn(str(e))
+            #x = im.x0(subdir=subdir, fields=fields)
+            #y = im.colvars(subdir=subdir, fields=fields).mean
+            #if normalize and x.ndim == 2 and x.shape[1] == 3:
+            #    n = x.shape[0]
+            #else:
+            #    n = 1.
+            #drift[seq] = np.linalg.norm(x - y) / np.sqrt(n) #* 10
         return drift
+
+
 
 
 def parse_commandline(argv=None):
