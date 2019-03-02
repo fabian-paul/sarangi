@@ -113,7 +113,28 @@ def recscalar_to_vector(recarray):
     return recarray.view((float, n_cols))
 
 
+def recarray_average(a, b):
+    if a.dtype.names != b.dtype.names:
+        raise ValueError('a and b must have the same fields')
+    c = np.zeros_like(a)
+    for name in a.dtype.names:
+        c[name] = (a[name] + b[name]) * 0.5
+    return c
+
+
 class Colvars(object):
+    def __init__(self, folder, base, fields=All):
+        self._mean = None
+        self._var = None
+        self._cov = None
+        fname = folder + '/' + base
+        if os.path.exists(fname + '.colvars.traj'):
+            self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
+        elif os.path.exists(fname + '.npy'):
+            self._colvars = np.load(fname + '.npy')
+        else:
+            raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)
+
     @staticmethod
     def parse_line(tokens):
         'Convert line from colvsars.traj.file to a list of values and a list of vector dimensions'
@@ -181,18 +202,6 @@ class Colvars(object):
         #    print(c.shape, n, dtype.fields[n][0].shape)
         return np.core.records.fromarrays(colgroups, dtype=dtype)
 
-    def __init__(self, folder, base, fields=All):
-        self._mean = None
-        self._var = None
-        self._cov = None
-        fname = folder + '/' + base
-        if os.path.exists(fname + '.colvars.traj'):
-            self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
-        elif os.path.exists(fname + '.npy'):
-            self._colvars = np.load(fname + '.npy')
-        else:
-            raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)
-
     def _compute_moments(self):
         if self._mean is None or self._var is None:
             pcoords = self._colvars
@@ -230,6 +239,9 @@ class Colvars(object):
             m = idx[-1]
             x = np.zeros((n, m), dtype=float)
             for name, start, stop in zip(self._colvars.dtype.names, idx[0:-1], idx[1:]):
+                #columns = self._colvars[name]
+                #x[:, start:stop] = np.reshape(columns, (len(columns),-1))
+                #print(name, ':', self._colvars[name].shape, '->', x[:, start:stop].shape)
                 x[:, start:stop] = self._colvars[name]
             return x
 
@@ -323,15 +335,13 @@ class Colvars(object):
 
     def closest_point(self, x):
         'Find the replica which is closest to x in order parameters space.'
-        if self._colvars.ndim == 2:
-            axis = 1
-        elif self._colvars.ndim == 3:
-            axis = (1, 2)
-        else:
-            raise NotImplementedError('Nodes with ndim > 2 are not supported.')
-        dist = np.linalg.norm(self._colvars - x[np.newaxis, ...], axis=axis)
+        #print('input shapes', self.as2D.shape, recscalar_to_vector(x).shape)
+        dist = np.linalg.norm(self.as2D - recscalar_to_vector(x), axis=1)
+        #print('dist shape', dist.shape)
         i = np.argmin(dist)
-        return {'i':int(i), 'd':dist[i], 'x':self._colvars[i]}
+        return {'i': int(i),
+                'd': dist[i],
+                'x': self._colvars[i]}
 
     def distance_of_mean(self, other, rmsd=True):
         'Compute the distance between the mean of this window and the mean of some other window.'
@@ -548,6 +558,7 @@ class Image(object):
 
         return self
 
+    @deprecated
     def closest_replica(self, x):  # TODO: rewrite!!!
         # TODO: offer option to search for a replica that is closest to a given plane
         'Find the replica which is closest to x in order parameters space.'
@@ -640,7 +651,7 @@ class Image(object):
         mbar.estimate((ttrajs, ttrajs, btrajs))
         return mbar.f_therm[0] - mbar.f_therm[1]
 
-    def displacement(self, subdir='colvars', fields=All, rmsd=True, origin='node'):
+    def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
         'Compute the difference between the windows\'s mean and its initial position in order parameter space'
         if origin == 'x0':
             o = self.x0(subdir=subdir, fields=fields)
@@ -652,10 +663,11 @@ class Image(object):
         else:
             raise ValueError('origin must be either "node" or "x0"')
         mean = self.colvars(subdir=subdir, fields=fields).mean
-        if rmsd:
+        if norm=='rmsd':
             n_atoms = len(o.dtype.names)
         else:
             n_atoms = 1
+        # TODO: have option to report the biggest displacement of individual atoms
         return np.linalg.norm(recscalar_to_vector(mean) - recscalar_to_vector(o)) * (n_atoms ** -0.5)
 
 
@@ -703,7 +715,9 @@ def get_queued_jobs():
         except FileNotFoundError:
             return None  #_All
 
+
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
+
 
 class String(object):
     def __init__(self, branch, iteration, images, image_distance, previous, opaque):
@@ -724,6 +738,13 @@ class String(object):
             images = dict()
         return String(branch=self.branch, iteration=iteration, images=images,
                       image_distance=self.image_distance, previous=previous, opaque=self.opaque)
+
+    def add_image(self, image):
+        'Add nwe image to string'
+        if image.seq in self.images:
+            raise ValueError('String already contains an image with sequence id %f, aborting opertarion. ' % image.seq)
+        else:
+            self.images[image.seq] = image
 
     def __len__(self):
         'Number of images'
@@ -790,9 +811,17 @@ class String(object):
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
-    def bisect_at(self, i, j=None, subdir='colvars', where='mean', search='string', fields=All):
-        # TODO: think more about the parameters ...
-        # TODO
+    def bisect_at(self, i, j=None, subdir='colvars', where='node', search='string', fields=All):
+        r'''
+
+        example
+        -------
+            ov, ids = string.overlap(return_ids=True)
+            for pair, o in zip(ids, ov):
+                if o < 0.05:
+                     new_image = string.bisect_at(i=pair[0], j=pair[1])
+                     string.add_image(new_image)
+        '''
         if j is None:
             j += i + 1
         if isinstance(i, int):
@@ -808,19 +837,19 @@ class String(object):
         else:
             raise ValueError('parameter j has incorrect type')
         if where == 'mean':
-            x = (p.colvars(subdir=subdir, field=fields).mean + q.colvars(subdir=subdir, field=fields).mean) * 0.5
+            x = recarray_average(p.colvars(subdir=subdir, fields=fields).mean, q.colvars(subdir=subdir, fields=fields).mean)
         elif where == 'x0':
-            x = (p.x0(subdir=subdir, field=fields) + q.x0(subdir=subdir, field=fields)) * 0.5
+            x = recarray_average(p.x0(subdir=subdir, fields=fields), q.x0(subdir=subdir, fields=fields))
         elif where == 'node':
-            x = (p.node(subdir=subdir, field=fields) + q.node(subdir=subdir, field=fields)) * 0.5
+            x = recarray_average(p.node, q.node)
         elif where == 'plane':
             raise NotImplementedError('bisection at SVM plane not implemented yet')
         else:
             raise ValueError('Unrecognized value "%s" for option "where"' % where)
 
         if search == 'points':
-            query_p = p.colvars(subdir=subdir).closest_point(x)
-            query_q = q.colvars(subdir=subdir).closest_point(x)
+            query_p = p.colvars(subdir=subdir, fields=fields).closest_point(x)
+            query_q = q.colvars(subdir=subdir, fields=fields).closest_point(x)
             if query_p['d'] < query_q['d']:
                 print('best distance is', query_p['d'])
                 best_image = p
@@ -830,7 +859,12 @@ class String(object):
                 best_image = q
                 best_step = query_q['i']
         elif search == 'string':
-            responses = [(im, im.colvars(subdir=subdir).closest_point(x)) for im in self.images.values()]
+            responses = []
+            try:
+                for im in self.images.values():
+                    responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(x)))
+            except FileNotFoundError as e:
+                warnings.warn(str(e))
             best_idx = np.argmin([r[1]['d'] for r in responses])
             best_image = responses[best_idx][0]
             best_step = responses[best_idx][1]['i']
@@ -838,13 +872,14 @@ class String(object):
         else:
             raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
+        # TODO: make alternative where we only attempt to change the most significant digit
         new_seq = (p.seq + q.seq) * 0.5
         new_major = int(new_seq)
         new_minor = int((new_seq - new_major)*1000)
         new_image_id = '%s_%03d_%03d_%03d' %(best_image.branch, best_image.iteration, new_major, new_minor)
 
         new_image = Image(image_id=new_image_id, previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                          node=best_image.node, spring=best_image.spring, endpoint=False, atoms_1=list(best_image.atoms_1))
+                          node=x, spring=best_image.spring, endpoint=False, atoms_1=best_image.atoms_1)
 
         #   self.images[new_image.seq] = new_image
         return new_image
@@ -857,7 +892,11 @@ class String(object):
         #best = int(np.argmin([r[1] for r in results]))
         #return images[best], results[best][0], results[best][1]
 
-    def bisect(self, subdir='colvars'):
+    def bisect(self, ids):
+        for pair in ids:
+            self.bisect_at()
+
+
         raise NotImplementedError('This is broken')
 
         ov_max, idx = self.overlap(subdir=subdir, indicator='max', return_ids=True)
@@ -1041,15 +1080,17 @@ class String(object):
 
     def overlap(self, subdir='colvars', fields=All, indicator='max', matrix=False, return_ids=False):
         'Compute the overlap (SVM) between images of the string'
+        ids = []
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
                 try:
                     o[i] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
+                    ids.append((a.seq, b.seq))
                 except FileNotFoundError as e:
                     warnings.warn(str(e))
             if return_ids:
-                return o, [(p.seq, q.seq) for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:])]
+                return o, ids
             else:
                 return o
         else:
@@ -1080,7 +1121,6 @@ class String(object):
         # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
         x = []
         for r in support_points:
-
             if tuple(r) not in x:
                 x.append(tuple(r))
         support_points = np.array(x)
@@ -1297,11 +1337,11 @@ class String(object):
         m = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
         return msmtools.analysis.pcca(T, m)
 
-    def displacement(self, subdir='colvars', fields=All, rmsd=True, origin='node'):
+    def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
         drift = {}
         for seq, im in self.images.items():
             try:
-                drift[seq] = im.displacement(subdir=subdir, fields=fields, rmsd=rmsd, origin=origin)
+                drift[seq] = im.displacement(subdir=subdir, fields=fields, norm=norm, origin=origin)
             except FileNotFoundError as e:
                 warnings.warn(str(e))
             #x = im.x0(subdir=subdir, fields=fields)
