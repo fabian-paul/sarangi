@@ -381,11 +381,12 @@ class Image(object):
         if previous_frame_number is None:
             previous_frame_number = self.previous_frame_number
         if node is None:
-            node = self.node
+            node = self.node.copy()
         if spring is None:
-            spring = self.spring
+            spring = self.spring.copy()
         if atoms_1 is None:
             atoms_1 = self.atoms_1
+
         if endpoint is None:
             endpoint = self.endpoint
         #image_id = '{branch}_{iteration:03d}_{major_id:03d}_{minor_id:03d}'.format(
@@ -525,19 +526,6 @@ class Image(object):
 
         env = self._make_env(random_number=random_number)
 
-        # if self.endpoint:
-        #     source = self.previous_base
-        #     dest = self.base
-        #     shutil.copy(source + '.dcd', dest + '.dcd')
-        #     if os.path.exists(source + '.colvars.traj'):  # if order were already computed
-        #         shutil.copy(source + '.colvars.traj', dest + '.colvars.traj')  # copy them
-        #     #else:  # compute the order parameters
-        #     #    default_env = dict(os.environ)
-        #     #    default_env.update(env)
-        #     #    subprocess.run('python $STRING_SIM_ROOT/string_scripts/pcoords.py $STRING_ARCHIVE.nc > $STRING_ARCHIVE.dat',
-        #     #                   shell=True, env=default_env)  # TODO: abstract this as a method
-
-        # else:  # normal (intermediate string point)
         if run_locally:
             job_file = self._make_job_file(env)
             print('run', job_file, '(', self.job_name, ')')
@@ -655,7 +643,7 @@ class Image(object):
         'Compute the difference between the windows\'s mean and its initial position in order parameter space'
         if origin == 'x0':
             o = self.x0(subdir=subdir, fields=fields)
-        elif origin == 'node':
+        elif origin == 'node' or origin == 'center':
             if isinstance(fields, Universe):
                 o = self.node
             else:
@@ -668,7 +656,11 @@ class Image(object):
         else:
             n_atoms = 1
         # TODO: have option to report the biggest displacement of individual atoms
-        return np.linalg.norm(recscalar_to_vector(mean) - recscalar_to_vector(o)) * (n_atoms ** -0.5)
+        if norm != 'rmsd':
+            ord = norm
+        else:
+            ord = None
+        return np.linalg.norm(recscalar_to_vector(mean) - recscalar_to_vector(o), ord=ord) * (n_atoms ** -0.5)
 
 
 def load_jobs_PBS():
@@ -719,6 +711,47 @@ def get_queued_jobs():
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
 
 
+def interpolate_id(s, z, others):
+    'Create new simulation ID between s and z, preferentially leaving low digits zero.'
+    others_int = []
+    for id_ in others:
+        _, _, a, b = id_.split('_')
+        others_int.append(int(a + b))
+
+    branch, iter_, a, b = s.split('_')
+    _, _, c, d = z.split('_')
+    x = a + b
+    y = c + d
+    upper = max(int(x), int(y))
+    lower = min(int(x), int(y))
+    # print('searching', upper, lower)
+    result = between(0, 6, upper=upper, lower=lower, others=others_int)
+    # print('searching', upper, lower)
+    if not result:
+        raise RuntimeError('Could not generate an unique id.')
+    return '%s_%03s_%03d_%03d' % (branch, iter_, result // 1000, result % 1000)
+
+
+def between(a, e, upper, lower, others):
+    if e < 0:
+        return False
+    for i in [5, 4, 6, 3, 7, 2, 8, 9, 1, 0]:  # TODO: start half between upper and lower instead with 5
+        x = a + 10 ** e * i
+        if lower < x < upper and x not in others:
+            # print('success', x)
+            return x
+    for i in [5, 4, 6, 3, 7, 2, 8, 9, 1, 0]:
+        l = a + 10 ** e * i
+        r = a + 10 ** e * (i + 1)
+        if lower < r and upper > l:
+            # print('recursing', a, l, r, e, i)
+            result = between(l, e - 1, upper, lower, others)
+            if result:
+                return result
+    # print('not found')
+    return False
+
+
 class String(object):
     def __init__(self, branch, iteration, images, image_distance, previous, opaque):
         self.branch = branch
@@ -742,7 +775,7 @@ class String(object):
     def add_image(self, image):
         'Add nwe image to string'
         if image.seq in self.images:
-            raise ValueError('String already contains an image with sequence id %f, aborting opertarion. ' % image.seq)
+            raise ValueError('String already contains an image with sequence id %f, aborting operation.' % image.seq)
         else:
             self.images[image.seq] = image
 
@@ -873,79 +906,35 @@ class String(object):
             raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
         # TODO: make alternative where we only attempt to change the most significant digit
-        new_seq = (p.seq + q.seq) * 0.5
-        new_major = int(new_seq)
-        new_minor = int((new_seq - new_major)*1000)
-        new_image_id = '%s_%03d_%03d_%03d' %(best_image.branch, best_image.iteration, new_major, new_minor)
+        #new_seq = (p.seq + q.seq) * 0.5
+        #new_major = int(new_seq)
+        #new_minor = int((new_seq - new_major)*1000)
+        #new_image_id = '%s_%03d_%03d_%03d' %(best_image.branch, best_image.iteration, new_major, new_minor)
+        new_image_id = interpolate_id(p.image_id, q.image_id, others=[im.image_id for im in self.images.values()])
+        if new_image_id in (im.image_id for im in self.images.items):
+            raise RuntimeError('Bisection produced new image id which is not unique. This should not happen.')
 
         new_image = Image(image_id=new_image_id, previous_image_id=best_image.image_id, previous_frame_number=best_step,
                           node=x, spring=best_image.spring, endpoint=False, atoms_1=best_image.atoms_1)
 
         #   self.images[new_image.seq] = new_image
         return new_image
-        # TODO: insert
-        #new_image = Image(image_id=new_image_id,
-        #                  previous_iteration_id=best_image.iteration_id,
-        #                  previous_image_id=best_image.image_id, previous_replica_id=best_step,
-        #                  node=x, endpoint=False)
-        #
-        #best = int(np.argmin([r[1] for r in results]))
-        #return images[best], results[best][0], results[best][1]
 
     def bisect(self, ids):
-        for pair in ids:
-            self.bisect_at()
-
 
         raise NotImplementedError('This is broken')
-
+        subdir = 'colvars'
         ov_max, idx = self.overlap(subdir=subdir, indicator='max', return_ids=True)
         gaps = np.array(idx)[ov_max < 0.10]
         new_imgs = []
-        new_string = self.empty_copy()  # images=string.images  # TODO???
+        new_string = self.empty_copy(images=string.images)  # keep current images, just add to them
         for gap in gaps:
-            new_img = string.bisect_at(i=gap[0], j=gap[1], subdir='cartesian', where='x0')
+            new_img = string.bisect_at(i=gap[0], j=gap[1], subdir=subdir, where='node')
             new_imgs.append(new_img)
             new_string.images[new_img.seq] = new_img
         return new_string  # new_string.write_yaml()
 
-        if not self.propagated:
-            raise RuntimeError('Trying to bisect string that has not been (fully) propagated. Giving up.')
-        # TODO
-        new_string = self.empty_copy()  # we must make a new string which can later be propagated
 
-        for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]):
-            new_string.images[p.image_id] = p  # copy p
-
-            overlap = p.overlap_plane(q, subdir=subdir)
-            print('overlap', overlap)
-            if overlap < 0.1:
-                print('besecting')
-                x = (p.x0 + q.x0) / 2
-                # TODO: use clf.support_vectors_
-                # TODO: find the actual frame ... how? Answer: the point closest to the plane TODO
-                # TODO: search in old string and not in current
-                prev_image, prev_replica_id, prev_dist = self.previous_string.find(x)  # TODO: search in current and past strings!
-                curr_image, curr_replica_id, curr_dist = self.find(x)
-                if prev_dist < curr_dist:
-                    old_image, old_replica_id = prev_image, prev_replica_id
-                else:
-                    old_image, old_replica_id = curr_image, curr_replica_id
-                #assert old_image.iteration_id == self.iteration - 1, old_image.iteration_id
-                new_image_id = (p.image_id + q.image_id) / 2  # go for the average now, fixme?
-                new_image = Image(iteration_id=self.iteration, image_id=new_image_id,
-                                  previous_iteration_id=old_image.iteration_id,
-                                  previous_image_id=old_image.image_id, previous_replica_id=old_replica_id,
-                                  node=x, endpoint=False)
-                print(new_image.node)
-                new_string.images[new_image_id] = new_image
-
-        new_string.images[max(self.images)] = self.images[max(self.images)]  # do not change numbering
-
-        print('done with string bisection')
-        new_string.write_yaml(backup=True)
-
-        return new_string
 
     def bisect_and_propagate_util_connected(self, run_locally=False):
         s = self
@@ -1003,42 +992,37 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def reparametrize(self, freeze=None):
-        'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String. Call .propagate to launch the simulations.'
-        # this routine is inspired by the design of wepy
-        assert self.propagated
+    def reparametrize(self, subdir='colvars'):
+        'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String.'
 
-        mus = reorder_nodes(nodes=[image.mean for image in self.images_ordered])
+        fields = self.images_ordered[0].mean.dtype.names
 
-        # 'nodes' are hypothetical points in conformation space that do not need to be realized
-        nodes = compute_equidistant_nodes_2(old_nodes=mus, d=self.image_distance)  # in the future we could let the arclength vary with node sigma
-        #print('newly computed nodes', nodes)
+        # collect all means and bring them into order ("direct" connection from 0 to len(self)-1)
+        means = reorder_nodes(nodes=[image.colvars(subdir=subdir, fields=fields).mean for image in self.images_ordered])  #  TODO: fix me!
 
-        new_string = self.empty_copy(iteration=self.iteration + 1, previous=self)
+        # do the string reparametrization
+        nodes = compute_equidistant_nodes_2(old_nodes=means, d=self.image_distance)  #  TODO: fix me!
 
-        start = self.images[0]
-        new_string.images[0] = start.copy(branch=self.branch, iteration=self.iteration + 1, node=start.colvars[0, :], major_id=0, minor_id=0)  # add endpoint
+        iteration = self.iteration + 1
+        new_string = self.empty_copy(iteration=iteration, previous=self)
 
         for i_node, x in enumerate(nodes):
             # we have to convert the unrealized nodes to realized frames
-            old_image, old_replica_id, _ = self.find(x)
-            new_image = Image(branch=self.branch, iteration=self.iteration + 1, id_major=i_node + 1, id_minor=0, # new_string already contains one image
-                              previous_image_id=old_image.image_id, previous_frame_number=old_replica_id,
-                              node=x, endpoint=False)
-            new_string.images[i_node + 1] = new_image
+            responses = []
+            try:
+                for im in self.images.values():
+                    responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(x)))
+            except FileNotFoundError as e:
+                warnings.warn(str(e))
+            best_idx = np.argmin([r[1]['d'] for r in responses])
+            best_image = responses[best_idx][0]
+            best_step = responses[best_idx][1]['i']
 
-        end = self.images[max(self.images)]
-        n_end = len(new_string.images)
-        new_string.images[n_end] = \
-            end.copy(branch=self.branch, iteration=self.iteration + 1, node=end.colvars[0, :], major_id=n_end, minor_id=0)  # add endpoint
+            new_image = Image(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
+                              previous_image_id=best_image.image_id, previous_frame_number=best_step,
+                              node=x, spring=best_image.spring.copy(), endpoint=False, atoms_1=None)
 
-        assert new_string.images[0].endpoint and new_string.images[max(new_string.images)].endpoint
-
-        #print('B base', new_string.images[-1].base)
-
-        #print('reparametrized string')  # debug
-
-        new_string.write_yaml()
+            new_string.images[new_image.seq] = new_image
 
         return new_string
 
@@ -1324,7 +1308,6 @@ class String(object):
     def overlap_gaps(matrix, threshold=0.99):
         'Indentify the major gaps in the (thermodynamic) overlap matrix'
         import msmtools
-        # TODO: what to do with the diagonal?
         n = matrix.shape[0]
         if matrix.shape[1] != n:
             raise ValueError('matrix must be square')
