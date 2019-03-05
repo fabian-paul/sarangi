@@ -54,7 +54,7 @@ def find(items, keys):
         return False, None
 
 
-class Universe(object):
+class AllType(object):
     'x in All == True for any x'
     def __contains__(self, key):
         return True
@@ -63,7 +63,7 @@ class Universe(object):
         return 'All'
 
 
-All = Universe()
+All = AllType()
 
 
 def mkdir(folder):
@@ -175,7 +175,7 @@ class Colvars(object):
                     rows.append(values)
         assert len(var_names) == len(dims)
         assert len(rows[0]) == sum(dims)
-        data = np.array(rows)
+        data = np.array(rows[1:])  # ignore the zero'th row, since this is just the initial condition (in NAMD)
 
         if selection is None:
             selection = All
@@ -194,8 +194,6 @@ class Colvars(object):
         dtype = np.dtype(dtype_def)
 
         indices = np.concatenate(([0], np.cumsum(dims)))
-        # print(dtype)
-        # print(indices)
         colgroups = [np.squeeze(data[:, start:stop]) for name, start, stop in zip(var_names, indices[0:-1], indices[1:])
                         if name in selection]
         # for c,n in zip(colgroups, dtype.names):
@@ -371,6 +369,9 @@ class Image(object):
         self._pcoords = {}
         self._x0 = {}
 
+    def __str__(self):
+        return self.image_id
+
     def copy(self, image_id=None, previous_image_id=None, previous_frame_number=None,
              node=None, spring=None, endpoint=None, atoms_1=None):
         'Copy the Image object, allowing parameter changes'
@@ -469,7 +470,7 @@ class Image(object):
     @property
     def seq(self):
         'id_major.in_minor as a floating point number'
-        return float(str(self.id_major) + '.' + str(self.id_minor))
+        return float('%03d.%03d' % (self.id_major, self.id_minor))
 
     #def id_str(self, arclength):
     #    return '%3s_%03d_%03d_%03d' % (self.branch, self.iteration, self.id_major, self.id_minor)
@@ -644,7 +645,7 @@ class Image(object):
         if origin == 'x0':
             o = self.x0(subdir=subdir, fields=fields)
         elif origin == 'node' or origin == 'center':
-            if isinstance(fields, Universe):
+            if isinstance(fields, AllType):
                 o = self.node
             else:
                 o = self.node[fields]  # TODO: FIXME
@@ -711,12 +712,12 @@ def get_queued_jobs():
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
 
 
-def interpolate_id(s, z, others):
+def interpolate_id(s, z, excluded):
     'Create new simulation ID between s and z, preferentially leaving low digits zero.'
-    others_int = []
-    for id_ in others:
+    excluded_int = []
+    for id_ in excluded:
         _, _, a, b = id_.split('_')
-        others_int.append(int(a + b))
+        excluded_int.append(int(a + b))
 
     branch, iter_, a, b = s.split('_')
     _, _, c, d = z.split('_')
@@ -725,27 +726,40 @@ def interpolate_id(s, z, others):
     upper = max(int(x), int(y))
     lower = min(int(x), int(y))
     # print('searching', upper, lower)
-    result = between(0, 6, upper=upper, lower=lower, others=others_int)
+    result = between(0, 6, upper=upper, lower=lower, excluded=excluded_int)
     # print('searching', upper, lower)
     if not result:
         raise RuntimeError('Could not generate an unique id.')
     return '%s_%03s_%03d_%03d' % (branch, iter_, result // 1000, result % 1000)
 
 
-def between(a, e, upper, lower, others):
+def overlap(a, b, c, d):
+    assert a <= b and c <= d
+    if b < c or a > d:
+        return 0
+    else:
+        return min(b, d) - max(a, c)
+
+
+def between(a, e, upper, lower, excluded):
+    integers = np.array([0, 5, 4, 6, 3, 7, 2, 8, 9, 1])
+
     if e < 0:
         return False
-    for i in [5, 4, 6, 3, 7, 2, 8, 9, 1, 0]:  # TODO: start half between upper and lower instead with 5
+    for i in integers:
         x = a + 10 ** e * i
-        if lower < x < upper and x not in others:
+        if lower < x < upper and x not in excluded:
             # print('success', x)
             return x
-    for i in [5, 4, 6, 3, 7, 2, 8, 9, 1, 0]:
+
+    # compute overlap with possible trial intervals, then try the ones with large overlap first
+    sizes = [overlap(lower, upper, a + 10 ** e * i, a + 10 ** e * (i + 1)) for i in integers]
+    for i in integers[np.argsort(sizes)[::-1]]:
         l = a + 10 ** e * i
         r = a + 10 ** e * (i + 1)
         if lower < r and upper > l:
-            # print('recursing', a, l, r, e, i)
-            result = between(l, e - 1, upper, lower, others)
+            # print('recursing', l, r, e, i)
+            result = between(l, e - 1, upper, lower, excluded)
             if result:
                 return result
     # print('not found')
@@ -761,6 +775,11 @@ class String(object):
         self.previous = previous
         self.opaque = opaque
 
+    def __str__(self):
+        str_images = '{' + ', '.join(['%g:%s'%(seq, im) for seq, im in self.images.items()]) + '}'
+        return 'String(branch=\'%s\', iteration=%d, images=%s, image_distance=%f, previous=%s, opaque=%s)' % (
+            self.branch, self.iteration, str_images, self.image_distance, self.previous, self.opaque)
+
     def empty_copy(self, iteration=None, images=None, previous=None):
         'Creates a copy of the current String object. Image array is left empty.'
         if iteration is None:
@@ -773,7 +792,7 @@ class String(object):
                       image_distance=self.image_distance, previous=previous, opaque=self.opaque)
 
     def add_image(self, image):
-        'Add nwe image to string'
+        'Add new image to string'
         if image.seq in self.images:
             raise ValueError('String already contains an image with sequence id %f, aborting operation.' % image.seq)
         else:
@@ -873,7 +892,7 @@ class String(object):
             x = recarray_average(p.colvars(subdir=subdir, fields=fields).mean, q.colvars(subdir=subdir, fields=fields).mean)
         elif where == 'x0':
             x = recarray_average(p.x0(subdir=subdir, fields=fields), q.x0(subdir=subdir, fields=fields))
-        elif where == 'node':
+        elif where == 'node' or where == 'center':
             x = recarray_average(p.node, q.node)
         elif where == 'plane':
             raise NotImplementedError('bisection at SVM plane not implemented yet')
@@ -892,16 +911,17 @@ class String(object):
                 best_image = q
                 best_step = query_q['i']
         elif search == 'string':
+            # TODO: move code to .find()
             responses = []
-            try:
-                for im in self.images.values():
+            for im in self.images.values():
+                try:
                     responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(x)))
-            except FileNotFoundError as e:
-                warnings.warn(str(e))
+                except FileNotFoundError as e:
+                    warnings.warn(str(e))
             best_idx = np.argmin([r[1]['d'] for r in responses])
             best_image = responses[best_idx][0]
             best_step = responses[best_idx][1]['i']
-            print('best distance is', responses[best_idx][1]['d'])
+            print('best distance is', responses[best_idx][1]['d'], '@', responses[best_idx][0].image_id)
         else:
             raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
@@ -910,12 +930,12 @@ class String(object):
         #new_major = int(new_seq)
         #new_minor = int((new_seq - new_major)*1000)
         #new_image_id = '%s_%03d_%03d_%03d' %(best_image.branch, best_image.iteration, new_major, new_minor)
-        new_image_id = interpolate_id(p.image_id, q.image_id, others=[im.image_id for im in self.images.values()])
-        if new_image_id in (im.image_id for im in self.images.items):
+        new_image_id = interpolate_id(p.image_id, q.image_id, excluded=[im.image_id for im in self.images.values()])
+        if any(new_image_id == im.image_id for im in self.images.values()):
             raise RuntimeError('Bisection produced new image id which is not unique. This should not happen.')
 
         new_image = Image(image_id=new_image_id, previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                          node=x, spring=best_image.spring, endpoint=False, atoms_1=best_image.atoms_1)
+                          node=x, spring=p.spring.copy(), endpoint=False, atoms_1=best_image.atoms_1)
 
         #   self.images[new_image.seq] = new_image
         return new_image
@@ -933,8 +953,6 @@ class String(object):
             new_imgs.append(new_img)
             new_string.images[new_img.seq] = new_img
         return new_string  # new_string.write_yaml()
-
-
 
     def bisect_and_propagate_util_connected(self, run_locally=False):
         s = self
@@ -992,10 +1010,10 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def reparametrize(self, subdir='colvars'):
+    def reparametrize(self, subdir='colvars', fields=All):
         'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String.'
 
-        fields = self.images_ordered[0].mean.dtype.names
+        # TODO: define whether image_distance include the normalization (1/sqrt(atom number)) or not ...
 
         # collect all means and bring them into order ("direct" connection from 0 to len(self)-1)
         means = reorder_nodes(nodes=[image.colvars(subdir=subdir, fields=fields).mean for image in self.images_ordered])  #  TODO: fix me!
@@ -1026,6 +1044,7 @@ class String(object):
 
         return new_string
 
+    @deprecated
     def find(self, x):
         'Find the Image and a replica that is closest to point x in order parameter space.'
         # return image, replica_id (in that image)
@@ -1046,7 +1065,7 @@ class String(object):
         image_distance = string['image_distance']
         images_arr = [Image.load(config=img_cfg) for img_cfg in string['images']]
         images = {image.seq:image for image in images_arr}
-        opaque = {key : config[key] for key in config.keys() if key!='strings'}
+        opaque = {key : config[key] for key in config.keys() if key != 'strings'}
         return String(branch=branch, iteration=iteration, images=images, image_distance=image_distance, previous=None,
                       opaque=opaque)
 
@@ -1335,6 +1354,17 @@ class String(object):
             #    n = 1.
             #drift[seq] = np.linalg.norm(x - y) / np.sqrt(n) #* 10
         return drift
+
+    def filter(self, regex):
+        'Return a new string that only contains the subset of images whose ID matched regex.'
+        import re
+        pattern = re.compile(regex)
+        filtered_string = self.empty_copy()
+        for im in self.images.values():
+            if pattern.search(im.image_id):
+                filtered_string.add_image(im)
+        return filtered_string
+
 
 
 
