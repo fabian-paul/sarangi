@@ -7,11 +7,10 @@ import concurrent.futures
 import subprocess
 import yaml  # replace with json (more portable and future proof)
 import tempfile
-import shutil
 import errno
 import time
 from pyemma.util.annotators import deprecated
-from .reparametrization import *
+from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 
 
 __all__ = ['String', 'Image', 'root', 'load', 'main', 'init', 'is_sim_id', 'All']
@@ -35,6 +34,7 @@ def root():
 # TODO: provide a set of functions/methods that abstract away id and file name generation
 
 # TODO: provide some plotting functions that takes a dictionary as input with entries image_id -> value
+
 
 def is_sim_id(s):
     fields = s.split('_')
@@ -78,7 +78,7 @@ def load_structured(config):
     'Convert dictionary with numerical values to numpy structured array'
     dtype_def = []
     for name, value in config.items():
-        if isinstance(value, list):
+        if isinstance(value, list) or isinstance(value, tuple):
             dtype_def.append((name, np.float64, len(value)))
         elif isinstance(value, float):
             dtype_def.append((name, np.float64))
@@ -89,7 +89,7 @@ def load_structured(config):
     dtype = np.dtype(dtype_def)
     array = np.zeros(1, dtype=dtype)
     for name, value in config.items():
-        array[name] = value
+        array[name] = value  # TODO: do we need special handling of input tuple?
     return array
 
 
@@ -97,20 +97,52 @@ def dump_structured(array):
     'Convert numpy structured array to python dictionary'
     config = {}
     for n in array.dtype.names:
+        # TODO: what about lists with a single element?
         if len(array.dtype.fields[n][0].shape) == 1:  # vector type
             config[n] = [float(x) for x in array[n][0]]
         elif len(array.dtype.fields[n][0].shape) == 0:  # scalar type
             config[n] = float(array[n])
         else:
-            raise RuntimeError('unsupported dimension')
+            raise ValueError('unsupported dimension')
     return config
 
 
-def recscalar_to_vector(recarray):
-    'Convert numpy recarray with on entry ("scalar type") to a numpy vector (1-D array)'
-    # TODO: also handle the case where the input is already a numpy vector?
-    n_cols = sum(np.prod(recarray.dtype.fields[name][0].shape, dtype=int) for name in recarray.dtype.names)
-    return recarray.view((float, n_cols))
+def structured_to_flat(recarray, fields=None):
+    r'''Convert numpy structured array to a flat numpy ndarray
+
+    :param recarray: numpy recarray
+    :param fields: list of string
+        If given, fields will be collected in the same order as they are given in the list.
+    :return: numpy ndarray
+        If the input recarray contains multiple time steps, the return value
+        will be two-dimensional.
+    '''
+    if recarray.dtype.names is None:
+        # conventional ndarray
+        if fields is not None and not isinstance(fields, AllType):
+            warnings.warn('User requested fields in a particular order %s, but input is already flat. Continuing and hoping for the best.' % str(fields))
+        n = recarray.shape[0]
+        return recarray.reshape((n, -1))
+    else:
+        if fields is None or isinstance(fields, AllType):
+            fields = recarray.dtype.names
+        n = recarray.shape[0]
+        idx = np.cumsum([0] +
+                        [np.prod(recarray.dtype.fields[name][0].shape, dtype=int) for name in fields])
+        m = idx[-1]
+        x = np.zeros((n, m), dtype=float)
+        for name, start, stop in zip(fields, idx[0:-1], idx[1:]):
+            x[:, start:stop] = recarray[name]
+        assert x.shape[0] == recarray.shape[0]
+        return x
+
+
+def flat_to_structured(array, fields, dims):
+    dtype = np.dtype([(name, np.float64, dim) for name, dim in zip(fields, dims)])
+    indices = np.concatenate(([0], np.cumsum(dims)))
+    # TODO: create simple structured array instead of recarray?
+    colgroups = [array[:, start:stop] for name, start, stop in zip(fields, indices[0:-1], indices[1:])]
+    return np.core.records.fromarrays(colgroups, dtype=dtype)
 
 
 def recarray_average(a, b):
@@ -191,6 +223,7 @@ class Colvars(object):
                     dtype_def.append((name, np.float64, 1))
                 else:
                     dtype_def.append((name, np.float64, dim))
+        print('dtype_def is', dtype_def)
         dtype = np.dtype(dtype_def)
 
         indices = np.concatenate(([0], np.cumsum(dims)))
@@ -198,6 +231,7 @@ class Colvars(object):
                         if name in selection]
         # for c,n in zip(colgroups, dtype.names):
         #    print(c.shape, n, dtype.fields[n][0].shape)
+        # TODO: can't we create the structured array directly from the rows?
         return np.core.records.fromarrays(colgroups, dtype=dtype)
 
     def _compute_moments(self):
@@ -227,21 +261,7 @@ class Colvars(object):
     @property
     def as2D(self):
         'Convert to plain 2-D numpy array where the first dimension is time'
-        if self._colvars.dtype.names is None:
-            n = self._colvars.shape[0]
-            return self._colvars.reshape((n, -1))
-        else:
-            n = self._colvars.shape[0]
-            idx = np.cumsum([0] +
-                            [np.prod(self._colvars.dtype.fields[name][0].shape, dtype=int) for name in self._colvars.dtype.names])
-            m = idx[-1]
-            x = np.zeros((n, m), dtype=float)
-            for name, start, stop in zip(self._colvars.dtype.names, idx[0:-1], idx[1:]):
-                #columns = self._colvars[name]
-                #x[:, start:stop] = np.reshape(columns, (len(columns),-1))
-                #print(name, ':', self._colvars[name].shape, '->', x[:, start:stop].shape)
-                x[:, start:stop] = self._colvars[name]
-            return x
+        return structured_to_flat(self._colvars)
 
     @property
     def mean(self):
@@ -310,7 +330,7 @@ class Colvars(object):
             raise NotImplementedError('Nodes with ndim > 1 are not supported.')
         results = []
         for x in points:
-            i = np.argmin(np.linalg.norm(x[np.newaxis, :]-nodes, axis=1))
+            i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
             if order == 0:
                 results.append(i)
             elif order == 2:
@@ -334,7 +354,7 @@ class Colvars(object):
     def closest_point(self, x):
         'Find the replica which is closest to x in order parameters space.'
         #print('input shapes', self.as2D.shape, recscalar_to_vector(x).shape)
-        dist = np.linalg.norm(self.as2D - recscalar_to_vector(x), axis=1)
+        dist = np.linalg.norm(self.as2D - structured_to_flat(x, fields=self.fields), axis=1)
         #print('dist shape', dist.shape)
         i = np.argmin(dist)
         return {'i': int(i),
@@ -348,12 +368,24 @@ class Colvars(object):
             # TODO: assert the each atoms entry has dimension 3
         else:
             n_atoms = 1
-        return np.linalg.norm(recscalar_to_vector(self.mean) - recscalar_to_vector(other.mean)) * (n_atoms ** -0.5)
+        return np.linalg.norm(structured_to_flat(self.mean) - structured_to_flat(other.mean, fields=self.fields)) * (n_atoms ** -0.5)
 
     @property
     def fields(self):
         'Variable names (from colvars.traj header or npy file)'
         return self._colvars.dtype.names
+
+    @property
+    def dims(self):
+        res = []
+        for n in self.fields:
+            shape = self._colvars.dtype.fields[n][0].shape
+            if len(shape) == 0:
+                res.append(1)
+            else:
+                res.append(shape[0])
+        return res
+
 
 
 class Image(object):
@@ -648,7 +680,7 @@ class Image(object):
             if isinstance(fields, AllType):
                 o = self.node
             else:
-                o = self.node[fields]  # TODO: FIXME
+                o = self.node[fields]
         else:
             raise ValueError('origin must be either "node" or "x0"')
         mean = self.colvars(subdir=subdir, fields=fields).mean
@@ -661,7 +693,7 @@ class Image(object):
             ord = norm
         else:
             ord = None
-        return np.linalg.norm(recscalar_to_vector(mean) - recscalar_to_vector(o), ord=ord) * (n_atoms ** -0.5)
+        return np.linalg.norm(structured_to_flat(mean) - structured_to_flat(o, fields=mean.dtype.names), ord=ord) * (n_atoms ** -0.5)
 
 
 def load_jobs_PBS():
@@ -1010,35 +1042,51 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def reparametrize(self, subdir='colvars', fields=All):
+    def reparametrize(self, subdir='colvars', fields=All, rmsd=True):
         'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String.'
 
-        # TODO: define whether image_distance include the normalization (1/sqrt(atom number)) or not ...
+        # collect all means, in the same time check that all the coordinate dimensions and
+        # coordinate names are the same across the string
+        colvars_0 = self.images_ordered[0].colvars(subdir=subdir, fields=fields)
+        real_fields = colvars_0.fields
+        dims = colvars_0.dims
+        current_means = []
+        for image in self.images_ordered:
+            colvars = image.colvars(subdir=subdir, fields=fields)
+            if colvars.fields != real_fields or colvars.dims != dims:
+                raise RuntimeError('colvar fields /dimensions are inconsistent across the string')
+            # the geometry functions in the reparametrization module work with 2-D numpy arrays, while the colvar
+            # class used recarrays and (1, n) shaped ndarrays. We therefore convert to plain numpy and strip extra dimensions.
+            current_means.append(structured_to_flat(colvars.mean, fields=real_fields)[0, :])
 
-        # collect all means and bring them into order ("direct" connection from 0 to len(self)-1)
-        means = reorder_nodes(nodes=[image.colvars(subdir=subdir, fields=fields).mean for image in self.images_ordered])  #  TODO: fix me!
+        if rmsd:
+            n_atoms = len(real_fields)
+        else:
+            n_atoms = 1
 
         # do the string reparametrization
-        nodes = compute_equidistant_nodes_2(old_nodes=means, d=self.image_distance)  #  TODO: fix me!
+        ordered_means = reorder_nodes(nodes=current_means)
+        nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5)
 
         iteration = self.iteration + 1
         new_string = self.empty_copy(iteration=iteration, previous=self)
 
         for i_node, x in enumerate(nodes):
             # we have to convert the unrealized nodes to realized frames
+            node = flat_to_structured(x[np.newaxis, :], fields=real_fields, dims=dims)
             responses = []
-            try:
-                for im in self.images.values():
-                    responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(x)))
-            except FileNotFoundError as e:
-                warnings.warn(str(e))
+            for im in self.images.values():
+                try:
+                    responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(node)))
+                except FileNotFoundError as e:
+                    warnings.warn(str(e))
             best_idx = np.argmin([r[1]['d'] for r in responses])
             best_image = responses[best_idx][0]
             best_step = responses[best_idx][1]['i']
 
             new_image = Image(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
                               previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                              node=x, spring=best_image.spring.copy(), endpoint=False, atoms_1=None)
+                              node=node, spring=best_image.spring.copy(), endpoint=False, atoms_1=None)
 
             new_string.images[new_image.seq] = new_image
 
@@ -1120,7 +1168,8 @@ class String(object):
         return f
 
     def arclength_projections(self, subdir='colvars', order=0, x0=False):
-        support_points = [recscalar_to_vector(image.node[0]) for image in self.images_ordered]  # TODO: use node instead?
+        fields = self.images_ordered[0].node.dtype.names
+        support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
         # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
         x = []
         for r in support_points:
@@ -1128,13 +1177,12 @@ class String(object):
                 x.append(tuple(r))
         support_points = np.array(x)
 
-        fields = self.images_ordered[0].node.dtype.names
         results = []
         for image in self.images_ordered:  # TODO: return as dictionary instead
             try:
                 if x0:
                     x = image.x0(subdir=subdir, fields=fields)
-                    results.append(Colvars.arclength_projection([recscalar_to_vector(x)], support_points, order=order))
+                    results.append(Colvars.arclength_projection([structured_to_flat(x, fields=fields)], support_points, order=order))
                 else:
                     x = image.colvars(subdir=subdir, fields=fields)
                     results.append(Colvars.arclength_projection(x.as2D, support_points, order=order))
