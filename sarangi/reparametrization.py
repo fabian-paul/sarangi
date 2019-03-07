@@ -115,7 +115,8 @@ def reorder_nodes(nodes):
             end = True
 
     if len(res) < len(nodes):
-        warnings.warn('String became shorter on reordering, looks like we deleted one (or more) omega(s).', RuntimeWarning)
+        warnings.warn(
+            'String became shorter on reordering, looks like we deleted one (or more) omega(s) '
+            'consisting nodes ' + ', '.join([str(i) for i in available]) + '.', RuntimeWarning)
 
     return res
-
