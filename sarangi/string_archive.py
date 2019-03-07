@@ -9,6 +9,8 @@ import warnings
 __all__ = ['root', 'save_coor', 'save_xsc', 'load_plan', 'store', 'extract', 'write_image', 'write_colvar',
            'load_image']
 
+# Currently this script is independent from the sarangi library and implements its own functions for reading plan files.
+
 
 def root():
     if 'STRING_SIM_ROOT' in os.environ:
@@ -39,6 +41,11 @@ def is_sim_id(s):
         return False
 
 
+def sim_id_to_seq(s):
+    fields = s.split('_')
+    return float(fields[2] + '.' + fields[3])
+
+
 def save_coor(traj, fname, frame=0):
     from struct import pack
     xyz = traj[frame].xyz[0, :, :]
@@ -55,14 +62,14 @@ def save_xsc(traj, fname, frame=0):
     s = '# NAMD extended system configuration output file\n'
     s += '#$LABELS step a_x a_y a_z b_x b_y b_z c_x c_y c_z o_x o_y o_z s_x s_y s_z s_u s_v s_w\n'
     s += '%d ' % f.time[0]
-    #print(f.unitcell_vectors.shape)
+    # print(f.unitcell_vectors.shape)
     s += '%f %f %f ' % tuple(f.unitcell_vectors[0, 0, :]*10.)
     s += '%f %f %f ' % tuple(f.unitcell_vectors[0, 1, :]*10.)
     s += '%f %f %f ' % tuple(f.unitcell_vectors[0, 2, :]*10.)
     s += '0 0 0 0 0 0 0 0 0\n'
     with open(fname, 'w') as file:
         file.write(s)
-    #frame.save_netcdfrst(fname_dest)
+    # frame.save_netcdfrst(fname_dest)
 
 
 def load_plan(fname_plan, sim_id=None):
@@ -79,7 +86,6 @@ def load_plan(fname_plan, sim_id=None):
 def store(fname_trajectory, fname_colvars_traj, sim_id):
     branch, iteration, image_major, image_minor = sim_id.split('_')
     fname_archived = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(
-        # TODO: also have this as an environment variable...
         root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
     shutil.copy(fname_trajectory, fname_archived+'.dcd')
@@ -89,7 +95,7 @@ def store(fname_trajectory, fname_colvars_traj, sim_id):
     shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
 
 
-def extract(me, fname_dest_coor, fname_dest_box, top, number):
+def extract(me, fname_dest_coor, fname_dest_box, top, number=-1):
     prev_id = me['prev_image_id']
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
@@ -121,7 +127,7 @@ def write_image(me, fname_dest_pdb, top_fname):
                       'reference. Skipping this step.')
         return
     frame = load_image(me, top_fname)
-    atoms = me['atoms_1']  # TODO: get beta factors from top file and copy to image
+    atoms = me['atoms_1']
     b_factors = [1 if (i + 1) in atoms else 0 for i in range(frame.top.n_atoms)]
     frame.save_pdb(fname_dest_pdb, bfactors=b_factors)
 
@@ -150,6 +156,39 @@ def write_colvar(colvars_file, colvars_template, me):
                                                   center=center_value_namd,
                                                   spring=spring_value_namd)
     with open(colvars_file, 'w') as f:
+        f.write(config)
+
+
+def sorted_images(string, group_id):
+    group = []
+    for image in string['images']:
+        if 'group' in image and image['group'] == group_id:
+            group += image
+    # order the group by ID
+    return sorted(group, key=lambda im: sim_id_to_seq(im['id']))
+
+
+def write_re_config(string, group_id='$STRING_GROUP_ID', bias_conf_fname='bias.conf'):
+    images = sorted_images(string, group_id)
+    config = 'set num_replicas %d' % len(images)
+    config += 'proc replica_bias { i } {\n  switch $i {\n'
+    for i, im in enumerate(images):
+        config += '%d {\nreturn { ' % i
+        for restraint_name, spring_value in im['spring'].items():
+            if 'node' in im and restraint_name in im['node']:
+                center_value = im['node'][restraint_name]
+            else:
+                warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
+                center_value = '0.0'
+            spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
+            center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
+            config += '{restraint_name} {{ centers {center} forceconstant {spring} }}\n\\'.format(
+                                                                    restraint_name=restraint_name,
+                                                                    center=center_value_namd,
+                                                                    spring=spring_value_namd)
+        config += '}}\n'
+    config += '}\n}\n'
+    with open(bias_conf_fname, 'w') as f:
         f.write(config)
 
 
@@ -193,15 +232,26 @@ if __name__ == '__main__':
                            default='image.pdb',
                            help='(out) file name for the umbrella center (image) coordinates')
 
+    re_extractor = subparser.add_parser('replica_extract', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    re_extractor.add_argument('--id', metavar='code', default='$STRING_GROUP_ID',
+                              help='group ID')
+    re_extractor.add_argument('--plan', metavar='path', default='$STRING_PLAN',
+                              help='(in) path to plan file')
+    re_extractor.add_argument('--top', metavar='path', default='$STRING_SIM_ROOT/setup/system.pdb',
+                              help='(in) file name of topology')
+
+    re_storer = subparser.add_parser('replica_store', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    re_storer.add_argument('--id', metavar='code', default='$STRING_GROUP_ID',
+                           help='group ID')
+    re_storer.add_argument('--plan', metavar='path', default='$STRING_PLAN',
+                           help='(in) path to plan file')
 
     args = parser.parse_args()
 
-    #top = os.path.expandvars(args.topology)
-
     if args.command == 'store':
         sim_id = os.path.expandvars(args.id)
-        #me = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=sim_id)
         store(fname_trajectory=args.trajectory, fname_colvars_traj=args.colvarstraj, sim_id=sim_id)
+
     elif args.command == 'extract':
         sim_id = os.path.expandvars(args.id)
         top = os.path.expandvars(args.top)
@@ -212,4 +262,24 @@ if __name__ == '__main__':
 
         write_image(me=me, fname_dest_pdb=args.image, top_fname=top)
 
-    print('end achivist')
+    elif args.command == 'replica_extract':
+        top = os.path.expandvars(args.top)
+        group_id = os.path.expandvars(args.id)
+        string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
+
+        # write bias definition
+        write_re_config(string=string, group_id=group_id)
+
+        # write initial conditions
+        for i, image in enumerate(sorted_images(string, group_id=group_id)):
+            extract(image, fname_dest_coor='in.%d.coor' % i, fname_dest_box='in.%d.xsc' % i, top=top)
+
+    if args.command == 'replica_store':
+        group_id = os.path.expandvars(args.id)
+        string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
+        for i, image in enumerate(sorted_images(string, group_id=group_id)):
+            store(fname_trajectory='out.%d.dcd' % i, fname_colvars_traj='out.%d.colvars.traj' % i, sim_id=image['id'])
+            # TODO: reorder by Hamiltonian (dcd and colvars.traj)
+            # TODO: store more data, like the history of biases?
+
+    print('end archivist')

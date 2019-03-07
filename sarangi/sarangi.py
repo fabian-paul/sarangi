@@ -9,6 +9,7 @@ import yaml  # replace with json (more portable and future proof)
 import tempfile
 import errno
 import time
+import weakref
 from pyemma.util.annotators import deprecated
 from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 
@@ -16,6 +17,9 @@ from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 __all__ = ['String', 'Image', 'root', 'load', 'main', 'init', 'is_sim_id', 'All']
 __author__ = 'Fabian Paul <fab@physik.tu-berlin.de>'
 
+
+# TODO: write function that returns the angles between displacements
+# TODO: write function that computes the mean force (and 1-D integrated force)
 
 def root():
     'Return absolute path to the root directory of the project.'
@@ -152,6 +156,25 @@ def recarray_average(a, b):
     for name in a.dtype.names:
         c[name] = (a[name] + b[name]) * 0.5
     return c
+
+
+def recarray_difference(a, b):
+    if a.dtype.names != b.dtype.names:
+        raise ValueError('a and b must have the same fields')
+    c = np.zeros_like(a)
+    for name in a.dtype.names:
+        c[name] = a[name] - b[name]
+    return c
+
+
+def recarray_norm(a, rmsd=True):
+    s = 0.0
+    for name in a.dtype.names:
+        s += np.sum(a[name]**2)
+    if rmsd:
+        return (s / len(a.dtype.names))**0.5
+    else:
+        return s**0.5
 
 
 class Colvars(object):
@@ -387,10 +410,11 @@ class Colvars(object):
         return res
 
 
-
+# TODO: prohibit overwriting of internal parameters to avoid accidental change of parameters during or after simulation
+# (expose parameters as read-only properties)
 class Image(object):
     def __init__(self, image_id, previous_image_id, previous_frame_number,
-                 node, spring, endpoint, atoms_1):
+                 node, spring, endpoint, atoms_1, group_id):
         self.image_id = image_id
         self.previous_image_id = previous_image_id
         self.previous_frame_number = previous_frame_number
@@ -398,14 +422,15 @@ class Image(object):
         self.spring = spring
         self.endpoint = endpoint
         self.atoms_1 = atoms_1
-        self._pcoords = {}
+        self.group_id = group_id
+        self._colvars = {}
         self._x0 = {}
 
     def __str__(self):
         return self.image_id
 
     def copy(self, image_id=None, previous_image_id=None, previous_frame_number=None,
-             node=None, spring=None, endpoint=None, atoms_1=None):
+             node=None, spring=None, endpoint=None, atoms_1=None, group_id=None):
         'Copy the Image object, allowing parameter changes'
         if image_id is None:
             image_id = self.image_id
@@ -419,6 +444,8 @@ class Image(object):
             spring = self.spring.copy()
         if atoms_1 is None:
             atoms_1 = self.atoms_1
+        if group_id is None:
+            group_id = self.group_id
 
         if endpoint is None:
             endpoint = self.endpoint
@@ -427,7 +454,7 @@ class Image(object):
         #            )
         return Image(image_id=image_id, previous_image_id=previous_image_id,
                      previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1)
+                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1, group_id=group_id)
 
     @classmethod
     def load(cls, config):
@@ -451,9 +478,14 @@ class Image(object):
             endpoint = config['endpoint']
         else:
             endpoint = False
+        if 'group' in config:
+            group_id = config['group']
+        else:
+            group_id = None
+
         return Image(image_id=image_id, previous_image_id=previous_image_id,
                      previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1)
+                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1, group_id=group_id)
 
     def dump(self):
         'Dump state of object to dictionary. Called by String.dump'
@@ -465,15 +497,24 @@ class Image(object):
             config['spring'] = dump_structured(self.spring)
         if self.atoms_1 is not None:
             config['atoms_1'] = self.atoms_1
+        if self.group_id is not None:
+            config['group'] = self.group_id
         if self.endpoint is not None and self.endpoint:
             config['endpoint'] = self.endpoint
         return config
 
     @property
     def propagated(self):
-        return os.path.exists(self.base + '.dcd') #and os.path.exists(self.base + '.colvars.traj')
+        if os.path.exists(self.base + '.dcd'):
+            return True
+        for folder in os.listdir(self.colvar_root):
+            if os.path.exists('%s/%s/%s.colvars.traj' % (self.colvar_root, folder, self.image_id)):
+                return True
+            if os.path.exists('%s/%s/%s.npy' % (self.colvar_root, folder, self.image_id)):
+                return True
+        return False
 
-    def _make_job_file(self, env):
+    def _make_job_file(self, env): # TODO: move into gobal function
         'Created a submission script for the job on the local file system.'
         with open('%s/setup/jobfile.template' % root()) as f:
             template = ''.join(f.readlines())
@@ -504,9 +545,6 @@ class Image(object):
         'id_major.in_minor as a floating point number'
         return float('%03d.%03d' % (self.id_major, self.id_minor))
 
-    #def id_str(self, arclength):
-    #    return '%3s_%03d_%03d_%03d' % (self.branch, self.iteration, self.id_major, self.id_minor)
-
     @property
     def job_name(self):
         return 'im_' + self.image_id
@@ -523,9 +561,6 @@ class Image(object):
         return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                root=root(), branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
 
-    def submitted(self, queued_jobs):
-        return self.job_name in queued_jobs
-
     def _make_env(self, random_number):
         env = dict()
         root_ = root()
@@ -540,12 +575,12 @@ class Image(object):
         env['STRING_ARCHIVE'] = self.base
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
+        env['STRING_GROUP_ID'] = self.group_id
         return env
 
     def propagate(self, random_number, wait, queued_jobs, run_locally=False, dry=False):
         'Generic propagation command. Submits jobs for the intermediate points. Copies the end points.'
         if self.propagated:
-            #print(self.job_name, 'already completed')
             return self
 
         #  if the job is already queued, return or wait and return then
@@ -588,12 +623,16 @@ class Image(object):
         i = np.argmin(dist)
         return int(i), dist[i]
 
+    @property
+    def colvar_root(self):
+        return '{root}/observables/{branch}_{iteration:03d}/'.format(root=root(), branch=self.branch, iteration=self.iteration)
+
     def colvars(self, subdir='colvars', fields=All, memoize=True):
         'Return Colvars object for the set of collective variables saved in a given subdir and limited to given fields'
         if isinstance(fields, list):
             fields = tuple(fields)
-        if (subdir, fields) in self._pcoords:
-            return self._pcoords[(subdir, fields)]
+        if (subdir, fields) in self._colvars:
+            return self._colvars[(subdir, fields)]
         else:
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
                    root=root(), branch=self.branch, iteration=self.iteration)
@@ -601,7 +640,7 @@ class Image(object):
                    branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
             pcoords = Colvars(folder=folder + subdir, base=base, fields=fields)
             if memoize:
-                self._pcoords[(subdir, fields)] = pcoords
+                self._colvars[(subdir, fields)] = pcoords
             return pcoords
 
     def overlap_plane(self, other, subdir='colvars', fields=All, indicator='max'):
@@ -672,6 +711,7 @@ class Image(object):
         mbar.estimate((ttrajs, ttrajs, btrajs))
         return mbar.f_therm[0] - mbar.f_therm[1]
 
+    # TODO: have some version that provides the relative signs (of the scalar product) of neighbors
     def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
         'Compute the difference between the windows\'s mean and its initial position in order parameter space'
         if origin == 'x0':
@@ -688,7 +728,6 @@ class Image(object):
             n_atoms = len(o.dtype.names)
         else:
             n_atoms = 1
-        # TODO: have option to report the biggest displacement of individual atoms
         if norm != 'rmsd':
             ord = norm
         else:
@@ -743,7 +782,7 @@ def get_queued_jobs():
 
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
 
-
+# TODO: move to separate module
 def interpolate_id(s, z, excluded):
     'Create new simulation ID between s and z, preferentially leaving low digits zero.'
     excluded_int = []
@@ -772,7 +811,7 @@ def overlap(a, b, c, d):
     else:
         return min(b, d) - max(a, c)
 
-
+# TODO: move to separate module
 def between(a, e, upper, lower, excluded):
     integers = np.array([0, 5, 4, 6, 3, 7, 2, 8, 9, 1])
 
@@ -798,6 +837,75 @@ def between(a, e, upper, lower, excluded):
     return False
 
 
+class Group(object):
+    'Group of images, that typically belong to the same replica exchange simulation'
+
+    def __init__(self, group_id, string, images=None):
+        self.group_id = group_id
+        if images is None:
+            self.images = dict()
+        else:
+            self.images = images
+            for im in images.values():
+                if im.group_id != group_id:
+                    raise ValueError('Trying to add image from group %s to group %s.' % (im.group_id, self.group_id))
+        self.string = weakref.proxy(string)  # avoid cyclic dependency between string and group
+
+    def _make_env(self, random_number):
+        env = dict()
+        root_ = root()
+        env['STRING_SIM_ROOT'] = root_
+        env['STRING_PLAN'] = '{root}/strings/{branch}_{iteration:03d}/plan.yaml'.format(root=root_,
+                                                                                        branch=self.string.branch,
+                                                                                        iteration=self.string.iteration)
+        env['STRING_RANDOM'] = str(random_number)
+        env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
+        env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
+        env['STRING_GROUP_ID'] = self.group_id
+        env['STRING_SIM_IDS'] = ' '.join([self.images[k].image_id for k in sorted(self.images.keys())])
+        return env
+
+    @property
+    def job_name(self):
+        return 're_%s_%03d_%s' % (self.string.branch, self.string.iteration, self.group_id)
+
+    def _make_job_file(self, env): # TODO: move into gobal function
+        'Created a submission script for the job on the local file system.'
+        with open('%s/setup/us_jobfile.template' % root()) as f:
+            template = ''.join(f.readlines())
+            environment = '\n'.join(['export %s=%s' % (k, v) for k, v in env.items()])
+        with tempfile.NamedTemporaryFile(suffix='.sh', delete=False) as f:
+            f.write(template.format(job_name=self.job_name, environment=environment).encode(encoding='UTF-8'))
+            job_file_name = f.name
+        return job_file_name
+
+    @property
+    def propagated(self):
+        return all(im.propagated for im in self.images.values())
+
+    def propagate(self, random_number, queued_jobs, dry=False):
+        'Run or submit to queuing system the propagation script'
+        if self.propagated:
+            return self
+
+        #  if the job is already queued, return or wait and return then
+        if self.job_name in queued_jobs:
+            print('skipping submission of', self.job_name, 'because already queued')
+
+        env = self._make_env(random_number=random_number)
+
+        job_file = self._make_job_file(env)
+        command = 'qsub ' + job_file  # TODO: slurm (sbatch)
+        print('run', command, '(', self.job_name, ')')
+        if not dry:
+            subprocess.run(command, shell=True)
+
+    def add_image(self, image):
+        if image.seq in self.images:
+            warnings.warn('Image with seq %f is already in group %s. Overwriting.' % (image.seq, self.group_id))
+        self.images[image.seq] = image
+
+
 class String(object):
     def __init__(self, branch, iteration, images, image_distance, previous, opaque):
         self.branch = branch
@@ -806,6 +914,13 @@ class String(object):
         self.image_distance = image_distance
         self.previous = previous
         self.opaque = opaque
+        self.groups = dict()
+        # create and populate groups, if group_ids were found in the config
+        for im in images.values():
+            if im.group_id is not None:
+                if im.group_id not in self.groups:
+                    self.groups[im.group_id] = Group(group_id=im.group_id, string=self)
+                self.groups[im.group_id].add_image(im)
 
     def __str__(self):
         str_images = '{' + ', '.join(['%g:%s'%(seq, im) for seq, im in self.images.items()]) + '}'
@@ -843,24 +958,23 @@ class String(object):
     def from_scratch(cls, image_distance=1.0, branch='AZ', iteration_id=1):
         'Initialized a String from a folder of *.nc files.'
         n_images = len(glob.glob(root() + '/strings/AZ_000/*.dcd'))
+        raise NotImplementedError('implementation currently broken')
         # TODO sort files and set endpoint properly!
         images = dict()
         for i in range(n_images):
-            endpoint = (i==0 or i==n_images - 1)
+            # endpoint = (i==0 or i==n_images - 1)
             images[i] = \
-                 Image(iteration_id=iteration_id, image_id=i, previous_iteration_id=0, previous_image_id=i,
-                        previous_replica_id=0, node=None, endpoint=endpoint)
+                 Image(image_id=i, previous_image_id=i, previous_frame_number=0, node=None, endpoint=False)
         return String(branch=branch, iteration=iteration_id, images=images, image_distance=image_distance, previous=None)
 
     def _launch_simulation(self, image, random_number, wait, queued_jobs, run_locally, dry):
         return image.propagate(random_number=random_number, wait=wait,
                                queued_jobs=queued_jobs, run_locally=run_locally, dry=dry)
 
-    def propagate(self, wait=False, run_locally=False, dry=False):
+    def propagate(self, wait=False, run_locally=False, dry=False, max_workers=1):
         'Propagated the String (one iteration). Returns a modified copy.'
         if self.propagated:
-            return self  # TODO: warn???
-        # Does not increase the iteration number
+            return self
 
         if run_locally:
             queued_jobs = []
@@ -869,25 +983,31 @@ class String(object):
             if queued_jobs is None:
                 raise RuntimeError('queued jobs is undefined, I don\'t know which jobs are currently running. Giving up propagation.')
 
-        #print('queued jobs', queued_jobs)
-
-        l = len(self.images)
         propagated_images = dict()
-
-        #print('propagating string, iteration =', self.iteration)
 
         mkdir('%s/strings/%s_%03d/' % (root(), self.branch, self.iteration))
 
-        max_workers=1#l
+        # max_workers = len(self.images)
 
+        # propagate individual images
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(self._launch_simulation, image, np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0], wait, queued_jobs, run_locally, dry)
-                       for image in self.images_ordered]
+            futures = []
+            for image in self.images_ordered:
+                if image.group is None:  # do not submit multi-replica simulations here
+                    random_number = np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0]
+                    futures.append(executor.submit(self._launch_simulation, image, random_number, wait, queued_jobs, run_locally, dry))
             for future in concurrent.futures.as_completed(futures):
                 image = future.result()
-                propagated_images[image.image_id] = image
+                propagated_images[image.seq] = image
 
-        return self.empty_copy(images=propagated_images)
+        # propagate replica exchange groups
+        # parallel execution is not needed here ... or is it?
+        for group in self.groups.values():
+            random_number = np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0]
+            group.propagate(random_number=random_number, queued_jobs=queued_jobs, dry=dry)
+            propagated_images.update(group.images)
+
+        return self.empty_copy(images=propagated_images)  # FIXME: why is this needed?
 
     def connected(self, threshold=0.1):
         'Test if all images are overlapping'
@@ -903,8 +1023,9 @@ class String(object):
             ov, ids = string.overlap(return_ids=True)
             for pair, o in zip(ids, ov):
                 if o < 0.05:
-                     new_image = string.bisect_at(i=pair[0], j=pair[1])
-                     string.add_image(new_image)
+                    new_image = string.bisect_at(i=pair[0], j=pair[1])
+                    string.add_image(new_image)
+            string.write_yaml(message='bisected at positions of low overlap')
         '''
         if j is None:
             j += i + 1
@@ -958,10 +1079,6 @@ class String(object):
             raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
         # TODO: make alternative where we only attempt to change the most significant digit
-        #new_seq = (p.seq + q.seq) * 0.5
-        #new_major = int(new_seq)
-        #new_minor = int((new_seq - new_major)*1000)
-        #new_image_id = '%s_%03d_%03d_%03d' %(best_image.branch, best_image.iteration, new_major, new_minor)
         new_image_id = interpolate_id(p.image_id, q.image_id, excluded=[im.image_id for im in self.images.values()])
         if any(new_image_id == im.image_id for im in self.images.values()):
             raise RuntimeError('Bisection produced new image id which is not unique. This should not happen.')
@@ -1008,15 +1125,16 @@ class String(object):
                 rib += 'C'  # completed
             elif queued_jobs is None:
                 rib += '?'
-            elif image.submitted(queued_jobs):
+            elif image.group_id is None and (image.job_name in queued_jobs):
                 rib += 's'  # submitted
+            elif image.group_id is not None and (self.groups[image.group_id].job_name in queued_jobs):
+                rib += 'S'  # submitted
             else:
                 rib += '.'  # not submitted, only defined
         return rib
 
     def write_yaml(self, backup=True, message=None):  # TODO: rename to save_status
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/strings/<branch>_<iteration>'
-        # TODO: think of saving this to the commits folder in general...
         import shutil
         string = {}
         for key, image in self.images.items():
@@ -1054,8 +1172,8 @@ class String(object):
         for image in self.images_ordered:
             colvars = image.colvars(subdir=subdir, fields=fields)
             if colvars.fields != real_fields or colvars.dims != dims:
-                raise RuntimeError('colvar fields /dimensions are inconsistent across the string')
-            # the geometry functions in the reparametrization module work with 2-D numpy arrays, while the colvar
+                raise RuntimeError('colvars fields / dimensions are inconsistent across the string')
+            # The geometry functions in the reparametrization module work with 2-D numpy arrays, while the colvar
             # class used recarrays and (1, n) shaped ndarrays. We therefore convert to plain numpy and strip extra dimensions.
             current_means.append(structured_to_flat(colvars.mean, fields=real_fields)[0, :])
 
@@ -1067,6 +1185,19 @@ class String(object):
         # do the string reparametrization
         ordered_means = reorder_nodes(nodes=current_means)
         nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5)
+
+        # do self-consistency tests (check distances)
+        eps = 1E-6
+        for i, (a, b) in enumerate(zip(nodes[0:-1], nodes[1:])):
+            delta = np.linalg.norm(a - b)
+            if delta > self.image_distance * n_atoms ** 0.5 + eps \
+                    or (delta < self.image_distance * n_atoms ** 0.5 - eps and i != len(nodes) - 2):
+                warnings.warn('Reparametrization failed at new nodes %d and %d (distance %f)' % (i, i + 1, delta))
+        # check order
+        for i in range(len(nodes) - 1):
+            if np.argmin(np.linalg.norm(nodes[i, np.newaxis, :] - nodes[i + 1:, :], axis=1)) != 0:
+                warnings.warn('Reparametrization did not yield an ordered string.')
+        # end of self-consistency test
 
         iteration = self.iteration + 1
         new_string = self.empty_copy(iteration=iteration, previous=self)
@@ -1413,8 +1544,25 @@ class String(object):
                 filtered_string.add_image(im)
         return filtered_string
 
-
-
+    def group_images(self, new_group_id, images):
+        'Assign set of images a new group id.'
+        # first find unique a new group id (that has not been used before)
+        current_group_ids = []
+        for im in self.images.values():
+            if im.group_id is not None and im.group_id not in current_group_ids:
+                current_group_ids.append(im.group_id)
+        if new_group_id in current_group_ids:
+            raise ValueError('Group id is already used.')
+        group = Group(new_group_id, self)
+        for im in images:
+            if im.propagated:
+                warnings.warn('Image %s was already propagated. Skipping this image.' % im)
+            if im.group_id is not None:
+                warnings.warn('Image %s already has a group id (%s). Skipping this image.' % (im, im.group_id))
+            else:
+                im.group_id = new_group_id
+                group.add_image(im)
+        self.groups[new_group_id] = group
 
 
 def parse_commandline(argv=None):
@@ -1427,11 +1575,14 @@ def parse_commandline(argv=None):
     parser.add_argument('--wait', help='wait for job completion', default=False, action='store_true')
     parser.add_argument('--dry', help='dry run', default=False, action='store_true')
     parser.add_argument('--local', help='run locally (in this machine)', default=False, action='store_true')
+    parser.add_argument('--re', help='run replica exchange simulations', default=False, action='store_true')
+    #parser.add_argument('--iteration', help='do not propagate current string but a past iteration', default=None)
     #parser.add_argument('--distance', help='distance between images', default=1.0)
     #parser.add_argument('--boot', help='bootstrap computation', default=False, action='store_true')
     args = parser.parse_args(argv)
 
-    return {'wait':args.wait, 'run_locally':args.local, 'dry':args.dry}
+    return {'wait': args.wait, 'run_locally': args.local, 'dry': args.dry, 're': args.re}
+
 
 def init(image_distance=1.0, argv=None):
     String.from_scratch(image_distance=image_distance).write_yaml()
@@ -1442,10 +1593,10 @@ def load(branch='AZ', offset=0):
     folder = root() + '/strings/'
     iteration = -1
     for entry in os.listdir(folder):
-        splinters =entry.split('_')
-        if len(splinters)==2:
+        splinters = entry.split('_')
+        if len(splinters) == 2:
             folder_branch, folder_iteration = splinters 
-            if folder_branch==branch and folder_iteration.isdigit():
+            if folder_branch == branch and folder_iteration.isdigit():
                 iteration = max([iteration, int(folder_iteration)])
     print('highest current iteration is', iteration)
     return String.load(branch=branch, iteration = iteration + offset)
@@ -1454,13 +1605,9 @@ def load(branch='AZ', offset=0):
 def main(argv=None):
     options = parse_commandline(argv)
 
-    #if args.boot:
-    #    string = String.from_scratch()
-    #else:
     string = load()
     print(string.branch, string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
 
-    # do at least one iteration
     if not string.propagated:
         string = string.propagate(wait=options['wait'], run_locally=options['run_locally'], dry=options['dry'])  # finish propagating
     #else:  # reparametrize and propagate at least once
