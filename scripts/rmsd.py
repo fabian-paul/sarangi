@@ -17,6 +17,7 @@ def mkdir(folder):
 def load_bias_defs(plan, sim_id, top_fname, keep_dups):
     branch, iter_, _, _ = sim_id.split('_')
     centers = {}
+    springs = {}
     indices = {}
     identifiers_seen = set()
     print('loading centers')
@@ -25,7 +26,7 @@ def load_bias_defs(plan, sim_id, top_fname, keep_dups):
     for image in plan['images']:
         #print(image)
         current_indices = np.array(image['atoms_1']) - 1
-        identifier = (image['prev_image_id'], image['prev_frame_number'], tuple(image['atoms_1']))
+        identifier = (image['prev_image_id'], image['prev_frame_number'], tuple(image['atoms_1']), float(image['spring']['RMSD']))
         if (not keep_dups) and identifier in identifiers_seen:  # TODO: depends on the order of images, FIXME
             print('skipping duplicate bias ' + image['id'])
             continue
@@ -44,13 +45,14 @@ def load_bias_defs(plan, sim_id, top_fname, keep_dups):
             os.rename(cached_fname_tmp, cached_fname)  # for NFS
         im_id = image['id']
         centers[im_id] = xyz[current_indices, :] #.reshape(len(current_indices) * 3)
+        springs[im_id] = float(image['spring']['RMSD'])
         indices[im_id] = current_indices
 
     print('found', len(centers), 'centers')
-    return centers, indices
+    return centers, springs, indices
 
 
-def compute_rmsd(fname_traj, sim_id, fname_top, cv_name, centers, indices, update=False):
+def compute_rmsd(fname_traj, sim_id, fname_top, cv_name, centers, springs, indices, update=False):
 
     dtype = [(name, np.float32) for name in centers.keys()]
 
@@ -138,10 +140,10 @@ if __name__ == '__main__':
     else:
         fname_top = os.path.expandvars(args.top)
 
-    if (args.id == 'auto' or args.top == 'auto' or args.plan == 'auto') and 'STRING_SIM_ROOT' not in os.environ:
-        os.environ['STRING_SIM_ROOT'] = traj_dir + '/../..'
+    if 'STRING_SIM_ROOT' not in os.environ:
+        os.environ['STRING_SIM_ROOT'] = root()
 
-    centers, indices = load_bias_defs(plan=plan, sim_id=sim_id, top_fname=fname_top, keep_dups=args.keepdups)
+    centers, springs, indices = load_bias_defs(plan=plan, sim_id=sim_id, top_fname=fname_top, keep_dups=args.keepdups)
     
     # here we can do a potential mass operation
     # for mass operation, only allow sim_id=='auto'!
@@ -151,4 +153,4 @@ if __name__ == '__main__':
         else:
             sim_id = os.path.expandvars(args.id)
         print('sim_id =', sim_id)
-        compute_rmsd(centers=centers, indices=indices, fname_traj=fname_traj, sim_id=sim_id, fname_top=fname_top, cv_name=args.cvname)
+        compute_rmsd(centers=centers, indices=indices, springs=springs, fname_traj=fname_traj, sim_id=sim_id, fname_top=fname_top, cv_name=args.cvname)
