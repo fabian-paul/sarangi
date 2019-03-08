@@ -5,7 +5,7 @@ from . import load, root, is_sim_id
 def main_transform(transform_and_save, cvname='colvars'):
     import os
     import argparse
-    parser = argparse.ArgumentParser(description='Compute medoids',
+    parser = argparse.ArgumentParser(description='Compute ' + cvname,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     parser.add_argument('--id', metavar='code', default='$STRING_IMAGE_ID',
@@ -38,8 +38,6 @@ def main_transform(transform_and_save, cvname='colvars'):
         branch, iter_, _, _ = sim_id.split('_')
         fname_base_out = '%s/observables/%s_%03d/%s/%s' % (root(), branch, int(iter_), args.cvname, sim_id)
         transform_and_save(fname_traj=fname_traj, fname_base_out=fname_base_out, sim_id=sim_id)
-        #print(fname_traj, '->', fname_out)
-        #np.save(fname_out, transform(fname_traj, sim_id))
 
 
 def main_update(image_id=None, ignore_colvar_traj=False):

@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 
+
 def point_at_arc_length_in_segment(p, q, s0, d):
     r'''Get point at arc length s + d on the segment [p, q].
 
@@ -63,7 +64,7 @@ def next_at_distance(p, q, o, r, s0=0.):
 
 def find_intersecting_segment(nodes, o, d, i_edge0, s0, direction=-1):
     'For all segments between nodes starting from node i_edge0, find intersection with point at distance d from o.'
-    'In first segment, arc length of intersecting point must be larger then s0. Retrun point and arc length'
+    'In first segment, arc length of intersecting point must be larger then s0. Return point and arc length'
     st = direction
     # print('i_edge0', i_edge0)
     nodes = np.array(nodes)[i_edge0:, :]
@@ -80,6 +81,8 @@ def find_intersecting_segment(nodes, o, d, i_edge0, s0, direction=-1):
 
 def compute_equidistant_nodes_2(old_nodes, d, direction=-1):
     nodes = np.array(old_nodes)
+    if nodes.ndim != 2:
+        raise ValueError('old_nodes must be 2-D')
     i_edge0 = 0
     res = []
     point = nodes[0, :]
@@ -94,6 +97,8 @@ def compute_equidistant_nodes_2(old_nodes, d, direction=-1):
 def reorder_nodes(nodes):
     'Reorder the nodes in the list given in the argument. nodes[0] and nodes[-1] are guaranteed to be unchanged.'
     nodes = np.array(nodes)
+    if nodes.ndim != 2:
+        raise ValueError('nodes must be 2-D and not %d' % nodes.ndim)
     last = len(nodes) - 1
     available = np.arange(1, len(nodes))
     x = nodes[0]
@@ -110,7 +115,8 @@ def reorder_nodes(nodes):
             end = True
 
     if len(res) < len(nodes):
-        warnings.warn('String became shorter on reordering, looks like we deleted some omega.', RuntimeWarning)
+        warnings.warn(
+            'String became shorter on reordering, looks like we deleted one (or more) omega(s) '
+            'consisting nodes ' + ', '.join([str(i) for i in available]) + '.', RuntimeWarning)
 
     return res
-
