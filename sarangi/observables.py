@@ -42,7 +42,7 @@ def main_transform(transform_and_save, cvname='colvars'):
         #np.save(fname_out, transform(fname_traj, sim_id))
 
 
-def main_update(image_id=None):
+def main_update(image_id=None, ignore_colvar_traj=False):
     import os
     sim_root = root()
     string = load()
@@ -61,8 +61,10 @@ def main_update(image_id=None):
                                                                                                iteration=string.iteration,
                                                                                                image_id=image.image_id)
                     print('checking', fname_base_out, end=' ')
-                    if not os.path.exists(fname_base_out + '.npy') and not os.path.exists(fname_base_out + '.colvars.traj') \
-                       and not os.path.exists(fname_base_out + '.pdb'):
+                    if os.path.exists(fname_base_out + '.npy') or (os.path.exists(fname_base_out + '.colvars.traj') and not ignore_colvar_traj) \
+                        or os.path.exists(fname_base_out + '.pdb'):
+                        print('exist. OK.')
+                    else:
                         print('not found; making file')
                         full_command = \
                             '{command} --id {image_id} --cvname {name} {trajectory}'.format(command=observable['command'],
@@ -74,6 +76,4 @@ def main_update(image_id=None):
                         env = image._make_env(random_number=0)
                         env.update(os.environ)
                         subprocess.run(full_command, shell=True, env=env)
-                    else:
-                        print('exist. OK.')
 
