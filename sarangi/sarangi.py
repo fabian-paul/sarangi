@@ -869,13 +869,15 @@ class Group(object):
     def job_name(self):
         return 're_%s_%03d_%s' % (self.string.branch, self.string.iteration, self.group_id)
 
-    def _make_job_file(self, env): # TODO: move into gobal function
+    def _make_job_file(self, env, cpus_per_replica=32):
         'Created a submission script for the job on the local file system.'
-        with open('%s/setup/us_jobfile.template' % root()) as f:
+        with open('%s/setup/re_jobfile.template' % root()) as f:
             template = ''.join(f.readlines())
             environment = '\n'.join(['export %s=%s' % (k, v) for k, v in env.items()])
+        num_replicas = len(self.images)
         with tempfile.NamedTemporaryFile(suffix='.sh', delete=False) as f:
-            f.write(template.format(job_name=self.job_name, environment=environment).encode(encoding='UTF-8'))
+            f.write(template.format(job_name=self.job_name, environment=environment, num_replicas=num_replicas,
+                                    num_cpus=num_replicas*cpus_per_replica).encode(encoding='UTF-8'))
             job_file_name = f.name
         return job_file_name
 
@@ -883,7 +885,7 @@ class Group(object):
     def propagated(self):
         return all(im.propagated for im in self.images.values())
 
-    def propagate(self, random_number, queued_jobs, dry=False):
+    def propagate(self, random_number, queued_jobs, dry=False, cpus_per_replica=32):
         'Run or submit to queuing system the propagation script'
         if self.propagated:
             return self
@@ -894,7 +896,7 @@ class Group(object):
 
         env = self._make_env(random_number=random_number)
 
-        job_file = self._make_job_file(env)
+        job_file = self._make_job_file(env, cpus_per_replica=cpus_per_replica)
         command = 'qsub ' + job_file  # TODO: slurm (sbatch)
         print('run', command, '(', self.job_name, ')')
         if not dry:
@@ -971,7 +973,7 @@ class String(object):
         return image.propagate(random_number=random_number, wait=wait,
                                queued_jobs=queued_jobs, run_locally=run_locally, dry=dry)
 
-    def propagate(self, wait=False, run_locally=False, dry=False, max_workers=1):
+    def propagate(self, wait=False, run_locally=False, dry=False, max_workers=1, cpus_per_replica=32):
         'Propagated the String (one iteration). Returns a modified copy.'
         if self.propagated:
             return self
@@ -993,6 +995,7 @@ class String(object):
         with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:
             futures = []
             for image in self.images_ordered:
+                # TODO: think about different ways of organizing single replica and multi-replica execution ...
                 if image.group is None:  # do not submit multi-replica simulations here
                     random_number = np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0]
                     futures.append(executor.submit(self._launch_simulation, image, random_number, wait, queued_jobs, run_locally, dry))
@@ -1004,13 +1007,14 @@ class String(object):
         # parallel execution is not needed here ... or is it?
         for group in self.groups.values():
             random_number = np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0]
-            group.propagate(random_number=random_number, queued_jobs=queued_jobs, dry=dry)
+            group.propagate(random_number=random_number, queued_jobs=queued_jobs, dry=dry, cpus_per_replica=cpus_per_replica)
             propagated_images.update(group.images)
 
         return self.empty_copy(images=propagated_images)  # FIXME: why is this needed?
 
     def connected(self, threshold=0.1):
         'Test if all images are overlapping'
+        # TODO: replace by implementation based on the overlap matrix and its eigenvalues / eigenvectors / PCCA states
         if not self.propagated:
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
@@ -1576,12 +1580,14 @@ def parse_commandline(argv=None):
     parser.add_argument('--dry', help='dry run', default=False, action='store_true')
     parser.add_argument('--local', help='run locally (in this machine)', default=False, action='store_true')
     parser.add_argument('--re', help='run replica exchange simulations', default=False, action='store_true')
+    parser.add_argument('--cpus_per_replica', help='number of CPU per replica (only for multi-replica jobs with NAMD)', default=32)
     #parser.add_argument('--iteration', help='do not propagate current string but a past iteration', default=None)
     #parser.add_argument('--distance', help='distance between images', default=1.0)
     #parser.add_argument('--boot', help='bootstrap computation', default=False, action='store_true')
     args = parser.parse_args(argv)
 
-    return {'wait': args.wait, 'run_locally': args.local, 'dry': args.dry, 're': args.re}
+    return {'wait': args.wait, 'run_locally': args.local, 'dry': args.dry, 're': args.re,
+            'cpus_per_replica': args.cpus_per_replica}
 
 
 def init(image_distance=1.0, argv=None):
@@ -1609,7 +1615,8 @@ def main(argv=None):
     print(string.branch, string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
 
     if not string.propagated:
-        string = string.propagate(wait=options['wait'], run_locally=options['run_locally'], dry=options['dry'])  # finish propagating
+        string = string.propagate(wait=options['wait'], run_locally=options['run_locally'], dry=options['dry'],
+                                  cpus_per_replica=options['cpus_per_replica'])
     #else:  # reparametrize and propagate at least once
     #    string = string.bisect_and_propagate_util_connected(run_locally=options['run_locally']).reparametrize().propagate(wait=options['wait'], run_locally=options['run_locally'])
 

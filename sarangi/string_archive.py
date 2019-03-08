@@ -239,6 +239,9 @@ if __name__ == '__main__':
                               help='(in) path to plan file')
     re_extractor.add_argument('--top', metavar='path', default='$STRING_SIM_ROOT/setup/system.pdb',
                               help='(in) file name of topology')
+    re_extractor.add_argument('--config', metavar='path', default='bias.conf',
+                              help='(out) file name for bias configuration file to generate')
+
 
     re_storer = subparser.add_parser('replica_store', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     re_storer.add_argument('--id', metavar='code', default='$STRING_GROUP_ID',
@@ -268,7 +271,7 @@ if __name__ == '__main__':
         string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
 
         # write bias definition
-        write_re_config(string=string, group_id=group_id)
+        write_re_config(string=string, group_id=group_id, bias_conf_fname=args.config)
 
         # write initial conditions
         for i, image in enumerate(sorted_images(string, group_id=group_id)):
