@@ -1249,6 +1249,10 @@ class String(object):
         string = config['strings'][0]
         branch = string['branch']
         iteration = string['iteration']
+        if int(string['iteration']) != iteration:
+            raise RuntimeError(
+                'Plan file is inconsitent: iteration recorded in the file is %s but the iteration encoded in the folder name is %d.' % (
+                    string['iteration'], iteration))
         image_distance = string['image_distance']
         images_arr = [Image.load(config=img_cfg) for img_cfg in string['images']]
         images = {image.seq:image for image in images_arr}
