@@ -564,8 +564,10 @@ class Image(object):
     def _make_env(self, random_number):
         env = dict()
         root_ = root()
+        # TODO: clean up this list a little, since the job script has access to the plan file anyway
         env['STRING_SIM_ROOT'] = root_
         env['STRING_ITERATION'] = str(self.iteration)
+        env['STRING_BRANCH'] = self.branch
         env['STRING_IMAGE_ID'] = self.image_id
         env['STRING_PLAN'] = '{root}/strings/{branch}_{iteration:03d}/plan.yaml'.format(root=root_, branch=self.branch, iteration=self.iteration)
         env['STRING_PREV_IMAGE_ID'] = self.previous_image_id
@@ -575,7 +577,6 @@ class Image(object):
         env['STRING_ARCHIVE'] = self.base
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
-        env['STRING_GROUP_ID'] = self.group_id
         return env
 
     def propagate(self, random_number, wait, queued_jobs, run_locally=False, dry=False):
@@ -855,14 +856,16 @@ class Group(object):
         env = dict()
         root_ = root()
         env['STRING_SIM_ROOT'] = root_
+        env['STRING_GROUP_ID'] = self.group_id
+        env['STRING_BRANCH'] = self.string.branch
+        env['STRING_ITERATION'] = int(self.string.iteration)
+        env['STRING_SIM_IDS'] = '"' + ' '.join([self.images[k].image_id for k in sorted(self.images.keys())]) + '"'
         env['STRING_PLAN'] = '{root}/strings/{branch}_{iteration:03d}/plan.yaml'.format(root=root_,
                                                                                         branch=self.string.branch,
                                                                                         iteration=self.string.iteration)
         env['STRING_RANDOM'] = str(random_number)
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
-        env['STRING_GROUP_ID'] = self.group_id
-        env['STRING_SIM_IDS'] = ' '.join([self.images[k].image_id for k in sorted(self.images.keys())])
         return env
 
     @property
@@ -893,6 +896,7 @@ class Group(object):
         #  if the job is already queued, return or wait and return then
         if self.job_name in queued_jobs:
             print('skipping submission of', self.job_name, 'because already queued')
+            return
 
         env = self._make_env(random_number=random_number)
 
@@ -996,7 +1000,7 @@ class String(object):
             futures = []
             for image in self.images_ordered:
                 # TODO: think about different ways of organizing single replica and multi-replica execution ...
-                if image.group is None:  # do not submit multi-replica simulations here
+                if image.group_id is None:  # do not submit multi-replica simulations here
                     random_number = np.random.randint(0, high=np.iinfo(np.int64).max, size=1, dtype=np.int64)[0]
                     futures.append(executor.submit(self._launch_simulation, image, random_number, wait, queued_jobs, run_locally, dry))
             for future in concurrent.futures.as_completed(futures):

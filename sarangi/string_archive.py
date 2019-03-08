@@ -163,17 +163,17 @@ def sorted_images(string, group_id):
     group = []
     for image in string['images']:
         if 'group' in image and image['group'] == group_id:
-            group += image
+            group.append(image)
     # order the group by ID
     return sorted(group, key=lambda im: sim_id_to_seq(im['id']))
 
 
 def write_re_config(string, group_id='$STRING_GROUP_ID', bias_conf_fname='bias.conf'):
     images = sorted_images(string, group_id)
-    config = 'set num_replicas %d' % len(images)
+    config = 'set num_replicas %d\n' % len(images)
     config += 'proc replica_bias { i } {\n  switch $i {\n'
     for i, im in enumerate(images):
-        config += '%d {\nreturn { ' % i
+        config += '  %d {\n    return {' % i
         for restraint_name, spring_value in im['spring'].items():
             if 'node' in im and restraint_name in im['node']:
                 center_value = im['node'][restraint_name]
@@ -182,11 +182,11 @@ def write_re_config(string, group_id='$STRING_GROUP_ID', bias_conf_fname='bias.c
                 center_value = '0.0'
             spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
             center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
-            config += '{restraint_name} {{ centers {center} forceconstant {spring} }}\n\\'.format(
+            config += '    {restraint_name}_restraint {{ centers {center} forceconstant {spring} }}\\\n'.format(
                                                                     restraint_name=restraint_name,
                                                                     center=center_value_namd,
                                                                     spring=spring_value_namd)
-        config += '}}\n'
+        config += '    }}\n'
     config += '}\n}\n'
     with open(bias_conf_fname, 'w') as f:
         f.write(config)
