@@ -505,6 +505,7 @@ class Image(object):
 
     @property
     def propagated(self):
+        'MD simulation was completed.'
         if os.path.exists(self.base + '.dcd'):
             return True
         for folder in os.listdir(self.colvar_root):
@@ -859,7 +860,7 @@ class Group(object):
         env['STRING_GROUP_ID'] = self.group_id
         env['STRING_BRANCH'] = self.string.branch
         env['STRING_ITERATION'] = int(self.string.iteration)
-        env['STRING_SIM_IDS'] = '"' + ' '.join([self.images[k].image_id for k in sorted(self.images.keys())]) + '"'
+        env['STRING_IMAGE_IDS'] = '"' + ' '.join([self.images[k].image_id for k in sorted(self.images.keys())]) + '"'
         env['STRING_PLAN'] = '{root}/strings/{branch}_{iteration:03d}/plan.yaml'.format(root=root_,
                                                                                         branch=self.string.branch,
                                                                                         iteration=self.string.iteration)
@@ -870,6 +871,7 @@ class Group(object):
 
     @property
     def job_name(self):
+        'Job name under which the simulation is known to the queuing system'
         return 're_%s_%03d_%s' % (self.string.branch, self.string.iteration, self.group_id)
 
     def _make_job_file(self, env, cpus_per_replica=32):
@@ -886,7 +888,8 @@ class Group(object):
 
     @property
     def propagated(self):
-        return all(im.propagated for im in self.images.values())
+        'MD simulation was completed?'
+        return any(im.propagated for im in self.images.values())
 
     def propagate(self, random_number, queued_jobs, dry=False, cpus_per_replica=32):
         'Run or submit to queuing system the propagation script'
@@ -1141,9 +1144,15 @@ class String(object):
                 rib += '.'  # not submitted, only defined
         return rib
 
+    def check_against_string_on_disk(self):
+        'Compare currently loaded string to the version on disk. Check that read-only elements were not modified'
+        # TODO: implement
+        return True
+
     def write_yaml(self, backup=True, message=None):  # TODO: rename to save_status
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/strings/<branch>_<iteration>'
         import shutil
+        self.check_against_string_on_disk()
         string = {}
         for key, image in self.images.items():
             assert key==image.seq
