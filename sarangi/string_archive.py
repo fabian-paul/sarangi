@@ -275,13 +275,15 @@ if __name__ == '__main__':
 
         # write initial conditions
         for i, image in enumerate(sorted_images(string, group_id=group_id)):
+            print('replica-extract: %s -> in.%d.coor' % (image['id'], i))
             extract(image, fname_dest_coor='in.%d.coor' % i, fname_dest_box='in.%d.xsc' % i, top=top)
 
     if args.command == 'replica_store':
         group_id = os.path.expandvars(args.id)
         string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
         for i, image in enumerate(sorted_images(string, group_id=group_id)):
-            store(fname_trajectory='out.%d.dcd' % i, fname_colvars_traj='out.%d.colvars.traj' % i, sim_id=image['id'])
+            print('replica-store: out.%d.sort.dcd -> %s' % (i, image['id']))
+            store(fname_trajectory='out.%d.sort.dcd' % i, fname_colvars_traj='out.%d.sort.colvars.traj' % i, sim_id=image['id'])
             # TODO: reorder by Hamiltonian (dcd and colvars.traj)
             # TODO: store more data, like the history of biases?
 
