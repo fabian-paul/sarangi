@@ -1,5 +1,5 @@
 import subprocess
-from . import load, root, is_sim_id
+from . import load, root, is_sim_id, String
 
 
 def main_transform(transform_and_save, cvname='colvars'):
@@ -43,7 +43,12 @@ def main_transform(transform_and_save, cvname='colvars'):
 def main_update(image_id=None, ignore_colvar_traj=False):
     import os
     sim_root = root()
-    string = load()
+    if image_id is not None:
+        branch, iteration, _, _ = image_id.split('_')
+        string = String.load(branch=branch, iteration=int(iteration))
+    else:
+        string = load()  # load highest iteration of the string
+
     observables = string.opaque['observables']
 
     for observable in observables:
