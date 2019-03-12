@@ -14,6 +14,11 @@ from pyemma.util.annotators import deprecated
 from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 
 
+# TODO: better handling of "all" fields: if selection "all" is used twice, make sure that the results are compatible
+# TODO: find a better way to handle the "step" column
+# TODO: offer some rsyc script to copy data
+#
+
 __all__ = ['String', 'Image', 'root', 'load', 'main', 'init', 'is_sim_id', 'All']
 __author__ = 'Fabian Paul <fab@physik.tu-berlin.de>'
 
@@ -246,7 +251,7 @@ class Colvars(object):
                     dtype_def.append((name, np.float64, 1))
                 else:
                     dtype_def.append((name, np.float64, dim))
-        print('dtype_def is', dtype_def)
+        #print('dtype_def is', dtype_def)
         dtype = np.dtype(dtype_def)
 
         indices = np.concatenate(([0], np.cumsum(dims)))
@@ -281,10 +286,9 @@ class Colvars(object):
     def __len__(self):
         return self._colvars.shape[0]
 
-    @property
-    def as2D(self):
+    def as2D(self, fields):
         'Convert to plain 2-D numpy array where the first dimension is time'
-        return structured_to_flat(self._colvars)
+        return structured_to_flat(self._colvars, fields=fields)
 
     @property
     def mean(self):
@@ -305,8 +309,8 @@ class Colvars(object):
         'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
         import sklearn.svm
         clf = sklearn.svm.LinearSVC()
-        X_self = self.as2D
-        X_other = other.as2D
+        X_self = self.as2D(fields=All)
+        X_other = other.as2D(fields=All)
         X = np.vstack((X_self, X_other))
         n_self = X_self.shape[0]
         n_other = X_other.shape[0]
@@ -377,7 +381,7 @@ class Colvars(object):
     def closest_point(self, x):
         'Find the replica which is closest to x in order parameters space.'
         #print('input shapes', self.as2D.shape, recscalar_to_vector(x).shape)
-        dist = np.linalg.norm(self.as2D - structured_to_flat(x, fields=self.fields), axis=1)
+        dist = np.linalg.norm(self.as2D(fields=self.fields) - structured_to_flat(x, fields=self.fields), axis=1)
         #print('dist shape', dist.shape)
         i = np.argmin(dist)
         return {'i': int(i),
@@ -428,6 +432,12 @@ class Image(object):
 
     def __str__(self):
         return self.image_id
+
+    def __eq__(self, other):
+        for key in ['image_id', 'previous_image_id', 'previous_frame_number', 'node', 'spring', 'endpoint', 'atoms_1', 'group_id']:
+            if  self.__dict__[key] != other.__dict__[key]:
+                return False
+        return True
 
     def copy(self, image_id=None, previous_image_id=None, previous_frame_number=None,
              node=None, spring=None, endpoint=None, atoms_1=None, group_id=None):
@@ -683,7 +693,7 @@ class Image(object):
     def potential(x, node, spring):
         'Compute the bias potential parametrized by node and spring evaluated along the possibly multidimensional order parameter x.'
         u = None
-        for name in x.fields:
+        for name in node.dtype.names:
             #print('x', x[name].shape)
             #print('spring', spring[name].shape)
             #print('node', node[name].shape)
@@ -699,6 +709,7 @@ class Image(object):
     def bar(self, other, subdir='colvars', T=303.15):
         'Compute thermodynamic free energy difference between this window (self) and other using BAR.'
         import pyemma
+        from pyemma.util.contexts import settings
         RT = 1.985877534E-3 * T  # kcal/mol
         fields = self.node.dtype.names
         my_x = self.colvars(subdir=subdir, fields=fields)
@@ -710,7 +721,8 @@ class Image(object):
         btrajs[1][:, 1] = Image.potential(other_x, other.node, other.spring) / RT
         ttrajs = [np.zeros(len(my_x), dtype=int), np.ones(len(other_x), dtype=int)]
         mbar = pyemma.thermo.MBAR()
-        mbar.estimate((ttrajs, ttrajs, btrajs))
+        with settings(show_progress_bars=False):
+            mbar.estimate((ttrajs, ttrajs, btrajs))
         return mbar.f_therm[0] - mbar.f_therm[1]
 
     # TODO: have some version that provides the relative signs (of the scalar product) of neighbors
@@ -914,6 +926,42 @@ class Group(object):
             warnings.warn('Image with seq %f is already in group %s. Overwriting.' % (image.seq, self.group_id))
         self.images[image.seq] = image
 
+    def _load_permutations(self):
+        'Load permutations and return as 2-D numpy array. replica[t, i_bias]'
+        base = '{root}/observables/{branch}_{iteration:03d}/replica/'.format(root=root(), branch=self.string.branch,
+                                                                             iteration=self.string.iteration)
+        replica = [np.loadtxt(base + im.image_id + '.sort.history')[:, 1].astype(int) for im in self.images.values()]
+        replica = np.vstack(replica).T
+        return replica
+
+    @property
+    def hamilonian(self):
+        'Permutations as 2-D numpy array, hamiltonian[t, i_replica] = index of bias. Ideal for plotting (together with hamiltonian_labels).'
+        replica = self._load_permutations()
+        return np.argsort(replica, axis=1)
+
+    @property
+    def hamiltonian_labels(self):
+        'Y-axes labels to use togehter with self.hamiltonian'
+        # The MD script must follow the same convention of mapping image ids to integers as sarangi.
+        # We assume that replicas are by numerically increasing images id and are numbered without any gaps.
+        # E.g. Assume the the images in the group have IDs 001_000, 001_123 and 001_312, the assignment will be
+        # as follows: 001_000 -> 0, 001_123 -> 1, 001_312 -> 2.
+        # This is automatically guaranteed, if sarangi's archivist is used to set up and post-process the simulations.
+        images_ordered = [self.images[key] for key in sorted(self.images.keys())]
+        return [im.image_id for im in images_ordered]
+
+    @property
+    def exchange_frequency(self):
+        'Compute the count matrix of successful exchanges between Hamiltonian.'
+        replica = self._load_permutations()
+        n = len(self.images)
+        counts = np.zeros((n, n), dtype=int)
+        for a, b in zip(replica[0:-1, :], replica[1:, :]):
+            for i, j in zip(a, b):
+                counts[i, j] += 1
+        return counts
+
 
 class String(object):
     def __init__(self, branch, iteration, images, image_distance, previous, opaque):
@@ -1027,7 +1075,7 @@ class String(object):
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
     def bisect_at(self, i, j=None, subdir='colvars', where='node', search='string', fields=All):
-        r'''
+        r'''Create new image half-way between images i and j.
 
         example
         -------
@@ -1037,6 +1085,14 @@ class String(object):
                     new_image = string.bisect_at(i=pair[0], j=pair[1])
                     string.add_image(new_image)
             string.write_yaml(message='bisected at positions of low overlap')
+
+        returns
+        -------
+        A new image. Image is not inserted into the string.
+
+        notes
+        -----
+        The group id of the new images is set to None.
         '''
         if j is None:
             j += i + 1
@@ -1089,13 +1145,13 @@ class String(object):
         else:
             raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
-        # TODO: make alternative where we only attempt to change the most significant digit
+
         new_image_id = interpolate_id(p.image_id, q.image_id, excluded=[im.image_id for im in self.images.values()])
         if any(new_image_id == im.image_id for im in self.images.values()):
             raise RuntimeError('Bisection produced new image id which is not unique. This should not happen.')
 
         new_image = Image(image_id=new_image_id, previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                          node=x, spring=p.spring.copy(), endpoint=False, atoms_1=best_image.atoms_1)
+                          node=x, spring=p.spring.copy(), endpoint=False, atoms_1=best_image.atoms_1, group_id=None)
 
         #   self.images[new_image.seq] = new_image
         return new_image
@@ -1144,15 +1200,30 @@ class String(object):
                 rib += '.'  # not submitted, only defined
         return rib
 
+    @property
+    def base(self):
+        return '{root}/strings/{branch}_{iteration:03d}'.format(root=root(), branch=self.branch, iteration=self.iteration)
+
     def check_against_string_on_disk(self):
         'Compare currently loaded string to the version on disk. Check that read-only elements were not modified'
-        # TODO: implement
+        try:
+            on_disk = String.load(branch=self.branch, iteration=self.iteration)
+        except FileNotFoundError:
+            # plan file does not exist, we therefore assume that this is a new string (or new iteration)
+            return True
+        # image values written to disk are not allowed to be changed in memory
+        for key, image in on_disk.images.items():
+            if self.images[key] != image:
+                warnings.warn('Images that have already been written to disk have changed in RAM. '
+                              'Unless you know exactly what you are doing, the current string cannot be saved.')
+                return False
         return True
 
-    def write_yaml(self, backup=True, message=None):  # TODO: rename to save_status
+    def write_yaml(self, backup=True, message=None, _override=False):  # TODO: rename to save_status
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/strings/<branch>_<iteration>'
         import shutil
-        self.check_against_string_on_disk()
+        if not self.check_against_string_on_disk() and not _override:
+            raise RuntimeError('Not saved.')
         string = {}
         for key, image in self.images.items():
             assert key==image.seq
@@ -1234,7 +1305,8 @@ class String(object):
 
             new_image = Image(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
                               previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                              node=node, spring=best_image.spring.copy(), endpoint=False, atoms_1=None)
+                              node=node, spring=best_image.spring.copy(), endpoint=False, atoms_1=None,
+                              group_id=None)
 
             new_string.images[new_image.seq] = new_image
 
@@ -1319,7 +1391,23 @@ class String(object):
                 warnings.warn(str(e))
         return f
 
-    def arclength_projections(self, subdir='colvars', order=0, x0=False):
+    def arclength_projections(self, subdir='colvars', order=1, x0=False):
+        r'''For all frames in all simulations, compute the arc length order parameter.
+
+        Notes
+        -----
+        This function is ideal for a simplified visualization of ensemble overlap.
+
+        arc = string.arclength_projections()
+        plt.figure(figsize=(15, 5))
+        for group in arc:
+            if len(arc) > 0:
+                plt.hist(group)
+
+        For order=2, the arc length is computed as detailed in the following publication
+        :   Grisell Díaz Leines and Bernd Ensing. Path finding on high-dimensional free energy landscapes.
+            Phys. Rev. Lett., 109:020601, 2012
+        '''
         fields = self.images_ordered[0].node.dtype.names
         support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
         # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
@@ -1337,7 +1425,7 @@ class String(object):
                     results.append(Colvars.arclength_projection([structured_to_flat(x, fields=fields)], support_points, order=order))
                 else:
                     x = image.colvars(subdir=subdir, fields=fields)
-                    results.append(Colvars.arclength_projection(x.as2D, support_points, order=order))
+                    results.append(Colvars.arclength_projection(x.as2D(fields=fields), support_points, order=order))
             except FileNotFoundError as e:
                 warnings.warn(str(e))
         return results
@@ -1380,7 +1468,7 @@ class String(object):
                 ttrajs.append(ttraj)
 
                 if disc_centers is not None:
-                    y = image.colvars(subdir=disc_subdir, fields=disc_fields, memoize=False).as2D
+                    y = image.colvars(subdir=disc_subdir, fields=disc_fields, memoize=False).as2D(fields=disc_fields)
                     dtrajs.append(pyemma.coordinates.assign_to_centers(y, centers=disc_centers)[0])
                 else:
                     dtrajs.append(np.zeros(len(x), dtype=int))
@@ -1621,7 +1709,7 @@ def load(branch='AZ', offset=0):
             folder_branch, folder_iteration = splinters 
             if folder_branch == branch and folder_iteration.isdigit():
                 iteration = max([iteration, int(folder_iteration)])
-    print('highest current iteration is', iteration)
+    print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + offset))
     return String.load(branch=branch, iteration = iteration + offset)
 
 
