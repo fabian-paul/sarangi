@@ -195,6 +195,7 @@ class Colvars(object):
             if not isinstance(fields, AllType):
                 #print('Hello fields!', fields, type(fields))
                 self._colvars = self._colvars[fields]
+        # TODO: support pdb format for later use for gap detection!
         else:
             raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)
 
@@ -1695,13 +1696,18 @@ def parse_commandline(argv=None):
     parser.add_argument('--local', help='run locally (in this machine)', default=False, action='store_true')
     parser.add_argument('--re', help='run replica exchange simulations', default=False, action='store_true')
     parser.add_argument('--cpus_per_replica', help='number of CPU per replica (only for multi-replica jobs with NAMD)', default=32)
-    #parser.add_argument('--iteration', help='do not propagate current string but a past iteration', default=None)
+    parser.add_argument('--iteration', help='do not propagate current string but a past iteration', default=None)
     #parser.add_argument('--distance', help='distance between images', default=1.0)
     #parser.add_argument('--boot', help='bootstrap computation', default=False, action='store_true')
     args = parser.parse_args(argv)
 
-    return {'wait': args.wait, 'run_locally': args.local, 'dry': args.dry, 're': args.re,
-            'cpus_per_replica': args.cpus_per_replica}
+    options=  {'wait': args.wait, 'run_locally': args.local, 'dry': args.dry, 're': args.re,
+               'cpus_per_replica': args.cpus_per_replica}
+    if args.iteration is not None:
+        options['iteration'] = int(args.iteration)
+    else:
+        options['iteration'] = None
+    return options
 
 
 def init(image_distance=1.0, argv=None):
@@ -1725,7 +1731,10 @@ def load(branch='AZ', offset=0):
 def main(argv=None):
     options = parse_commandline(argv)
 
-    string = load()
+    if options['iteration'] is None:
+        string = load()
+    else:
+        string = String.load(iteration=options['iteration'])
     print(string.branch, string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
 
     if not string.propagated:
