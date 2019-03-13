@@ -192,6 +192,9 @@ class Colvars(object):
             self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
         elif os.path.exists(fname + '.npy'):
             self._colvars = np.load(fname + '.npy')
+            if not isinstance(fields, AllType):
+                #print('Hello fields!', fields, type(fields))
+                self._colvars = self._colvars[fields]
         else:
             raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)
 
@@ -361,21 +364,29 @@ class Colvars(object):
             if order == 0:
                 results.append(i)
             elif order == 2:
-                if i == 0 or i == len(nodes) - 1:
-                    continue
-                mid = nodes[i, :]
-                plus = nodes[i + 1, :]
-                minus = nodes[i - 1, :]
-                v3 = plus - mid
-                v3v3 = np.vdot(v3, v3)
-                di = 1. #np.sign(i2 - i1)
-                v1 = mid - x
-                v2 = x - minus
-                v1v3 = np.vdot(v1, v3)
-                v1v1 = np.vdot(v1, v1)
-                v2v2 = np.vdot(v2, v2)
-                results.append(
-                     i + (di*(v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3 - v3v3) / (2*v3v3))
+                # equation from Grisell Díaz Leines and Bernd Ensing. Phys. Rev. Lett., 109:020601, 2012
+                if i == 0 or i == len(nodes) - 1:  # do orthogonal projection in the first and last segments
+                    if i == 0:
+                        i0 = 0
+                    else:
+                        i0 = len(nodes) - 2
+                    a, b = nodes[i0], nodes[i0 + 1]
+                    s = 1. - np.vdot(x - b, a - b) / np.vdot(a - b, a - b)
+                    results.append(i0 + min(max(s, 0.), 1.))  # clamp value between 0 and 1
+                else:  # for all other segments, continue with Leines and Ensing
+                    mid = nodes[i, :]
+                    plus = nodes[i + 1, :]
+                    minus = nodes[i - 1, :]
+                    v3 = plus - mid
+                    v3v3 = np.vdot(v3, v3)
+                    di = 1. #np.sign(i2 - i1)
+                    v1 = mid - x
+                    v2 = x - minus
+                    v1v3 = np.vdot(v1, v3)
+                    v1v1 = np.vdot(v1, v1)
+                    v2v2 = np.vdot(v2, v2)
+                    results.append(
+                         i + (di*(v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3 - v3v3) / (2*v3v3))
         return results
 
     def closest_point(self, x):
@@ -641,10 +652,8 @@ class Image(object):
 
     def colvars(self, subdir='colvars', fields=All, memoize=True):
         'Return Colvars object for the set of collective variables saved in a given subdir and limited to given fields'
-        if isinstance(fields, list):
-            fields = tuple(fields)
-        if (subdir, fields) in self._colvars:
-            return self._colvars[(subdir, fields)]
+        if (subdir, tuple(fields)) in self._colvars:
+            return self._colvars[(subdir, tuple(fields))]
         else:
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
                    root=root(), branch=self.branch, iteration=self.iteration)
@@ -652,7 +661,7 @@ class Image(object):
                    branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
             pcoords = Colvars(folder=folder + subdir, base=base, fields=fields)
             if memoize:
-                self._colvars[(subdir, fields)] = pcoords
+                self._colvars[(subdir, tuple(fields))] = pcoords
             return pcoords
 
     def overlap_plane(self, other, subdir='colvars', fields=All, indicator='max'):
@@ -818,7 +827,7 @@ def interpolate_id(s, z, excluded):
     return '%s_%03s_%03d_%03d' % (branch, iter_, result // 1000, result % 1000)
 
 
-def overlap(a, b, c, d):
+def interval_overlap(a, b, c, d):
     assert a <= b and c <= d
     if b < c or a > d:
         return 0
@@ -838,7 +847,7 @@ def between(a, e, upper, lower, excluded):
             return x
 
     # compute overlap with possible trial intervals, then try the ones with large overlap first
-    sizes = [overlap(lower, upper, a + 10 ** e * i, a + 10 ** e * (i + 1)) for i in integers]
+    sizes = [interval_overlap(lower, upper, a + 10 ** e * i, a + 10 ** e * (i + 1)) for i in integers]
     for i in integers[np.argsort(sizes)[::-1]]:
         l = a + 10 ** e * i
         r = a + 10 ** e * (i + 1)
@@ -1391,7 +1400,7 @@ class String(object):
                 warnings.warn(str(e))
         return f
 
-    def arclength_projections(self, subdir='colvars', order=1, x0=False):
+    def arclength_projections(self, subdir='colvars', order=2, x0=False):
         r'''For all frames in all simulations, compute the arc length order parameter.
 
         Notes
@@ -1401,10 +1410,10 @@ class String(object):
         arc = string.arclength_projections()
         plt.figure(figsize=(15, 5))
         for group in arc:
-            if len(arc) > 0:
-                plt.hist(group)
+            plt.hist(group)
 
         For order=2, the arc length is computed as detailed in the following publication
+
         :   Grisell Díaz Leines and Bernd Ensing. Path finding on high-dimensional free energy landscapes.
             Phys. Rev. Lett., 109:020601, 2012
         '''
