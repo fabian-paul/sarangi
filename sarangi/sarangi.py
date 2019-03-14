@@ -343,6 +343,8 @@ class Colvars(object):
 
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
+
+
         #if self.endpoint or other.endpoint:
         #    return 0
         half_log_det_s1 = np.sum(np.log(np.diag(np.linalg.cholesky(self.cov))))
@@ -574,7 +576,7 @@ class Image(object):
 
     @property
     def base(self):
-        'Base path of the image. base+".dcd" are the replicas, base+".dat" are the order parameters'
+        'Base path of the image. base+".dcd" is the path to the MD data.'
         return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                root=root(), branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
 
@@ -600,6 +602,12 @@ class Image(object):
         env['STRING_ARCHIVE'] = self.base
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
+        env['STRING_BASE'] = '{root}/strings/{branch}_{iteration:03d}'.format(root=root_,
+                                                                              branch=self.branch,
+                                                                              iteration=self.iteration)
+        env['STRING_OBSERVABLES_BASE'] = '{root}/observables/{branch}_{iteration:03d}'.format(root=root_,
+                                                                                              branch=self.branch,
+                                                                                              iteration=self.iteration)
         return env
 
     def propagate(self, random_number, wait, queued_jobs, run_locally=False, dry=False):
@@ -721,7 +729,7 @@ class Image(object):
         import pyemma
         from pyemma.util.contexts import settings
         RT = 1.985877534E-3 * T  # kcal/mol
-        fields = self.node.dtype.names
+        fields = list(self.node.dtype.names)
         my_x = self.colvars(subdir=subdir, fields=fields)
         other_x = other.colvars(subdir=subdir, fields=fields)
         btrajs = [np.zeros((len(my_x), 2)), np.zeros((len(other_x), 2))]
@@ -756,7 +764,7 @@ class Image(object):
             ord = norm
         else:
             ord = None
-        return np.linalg.norm(structured_to_flat(mean) - structured_to_flat(o, fields=mean.dtype.names), ord=ord) * (n_atoms ** -0.5)
+        return np.linalg.norm(structured_to_flat(mean).reshape(-1) - structured_to_flat(o, fields=list(mean.dtype.names)).reshape(-1), ord=ord) * (n_atoms ** -0.5)
 
 
 def load_jobs_PBS():
@@ -889,6 +897,12 @@ class Group(object):
         env['STRING_RANDOM'] = str(random_number)
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
+        env['STRING_BASE'] = '{root}/strings/{branch}_{iteration:03d}'.format(root=root_,
+                                                                              branch=self.string.branch,
+                                                                              iteration=self.string.iteration)
+        env['STRING_OBSERVABLES_BASE'] = '{root}/observables/{branch}_{iteration:03d}'.format(root=root_,
+                                                                                              branch=self.string.branch,
+                                                                                              iteration=self.string.iteration)
         return env
 
     @property
@@ -1418,7 +1432,7 @@ class String(object):
         :   Grisell Díaz Leines and Bernd Ensing. Path finding on high-dimensional free energy landscapes.
             Phys. Rev. Lett., 109:020601, 2012
         '''
-        fields = self.images_ordered[0].node.dtype.names
+        fields = list(self.images_ordered[0].node.dtype.names)
         support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
         # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
         x = []
@@ -1447,11 +1461,11 @@ class String(object):
 
         RT = 1.985877534E-3 * T  # kcal/mol
 
-        fields = self.images_ordered[0].node.dtype.names
+        fields = list(self.images_ordered[0].node.dtype.names)
         for image in self.images.values():
-            if image.node.dtype.names != fields:
+            if list(image.node.dtype.names) != fields:
                 raise RuntimeError('Images have varying node dimensions, cannot use this MBAR wrapper.')
-            if image.spring.dtype.names != fields:
+            if list(image.spring.dtype.names) != fields:
                 raise RuntimeError('Images have varying spring dimensions, cannot use this MBAR wrapper.')
 
         # collect all possible biases
@@ -1523,7 +1537,7 @@ class String(object):
             biases_computed = set()
 
             for bias in unique_biases:
-                found, simid = find(keys=bias.rmsd_simids, items=x._pcoords.dtype.names)
+                found, simid = find(keys=bias.rmsd_simids, items=list(x._pcoords.dtype.names))
                 if found:
                      running_bias_index = bias.ri
                      spring_constant = bias.spring
