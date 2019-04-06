@@ -1755,19 +1755,20 @@ def parse_commandline(argv=None):
     if argv is None:
         argv = sys.argv[1:]
 
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--wait', help='wait for job completion', default=False, action='store_true')
     parser.add_argument('--dry', help='dry run', default=False, action='store_true')
     parser.add_argument('--local', help='run locally (in this machine)', default=False, action='store_true')
     parser.add_argument('--re', help='run replica exchange simulations', default=False, action='store_true')
     parser.add_argument('--cpus_per_replica', help='number of CPU per replica (only for multi-replica jobs with NAMD)', default=32)
     parser.add_argument('--iteration', help='do not propagate current string but a past iteration', default=None)
+    parser.add_argument('--branch', help='select branch', default='AZ')
     #parser.add_argument('--distance', help='distance between images', default=1.0)
     #parser.add_argument('--boot', help='bootstrap computation', default=False, action='store_true')
     args = parser.parse_args(argv)
 
     options=  {'wait': args.wait, 'run_locally': args.local, 'dry': args.dry, 're': args.re,
-               'cpus_per_replica': args.cpus_per_replica}
+               'cpus_per_replica': args.cpus_per_replica, 'branch': args.branch}
     if args.iteration is not None:
         options['iteration'] = int(args.iteration)
     else:
@@ -1797,9 +1798,9 @@ def main(argv=None):
     options = parse_commandline(argv)
 
     if options['iteration'] is None:
-        string = load()
+        string = load(branch=options['branch'])
     else:
-        string = String.load(iteration=options['iteration'])
+        string = String.load(branch=options['branch'], iteration=options['iteration'])
     print(string.branch, string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
 
     if not string.propagated:
