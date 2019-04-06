@@ -710,18 +710,21 @@ class Image(object):
     @staticmethod
     def potential(x, node, spring):
         'Compute the bias potential parametrized by node and spring evaluated along the possibly multidimensional order parameter x.'
-        u = None
+        u = np.zeros(x._colvars.shape[0])
         for name in node.dtype.names:
             #print('x', x[name].shape)
             #print('spring', spring[name].shape)
             #print('node', node[name].shape)
-            u_part = spring[name] * np.linalg.norm(x[name] - node[name], axis=1)**2
+            #u_part = 0.5 * spring[name] * np.linalg.norm(x[name] - node[name], axis=1)**2
+            #print(x[name].shape, node[name].shape, (x[name] - node[name]).shape)
+            u_part = 0.5 * float(spring[name]) * np.sum((x[name] - node[name])**2, axis=1)
+            #print(u_part.shape)
             assert u_part.ndim == 1
             #print('pot', u_part.shape, u_part.ndim)
-            if u is None:
-                u = u_part
-            else:
-                u += u_part
+            #if u is None:
+            #    u = u_part
+            #else:
+            u += u_part
         return u
     
     def bar(self, other, subdir='colvars', T=303.15):
@@ -738,10 +741,19 @@ class Image(object):
         btrajs[1][:, 0] = Image.potential(other_x, self.node, self.spring) / RT
         btrajs[1][:, 1] = Image.potential(other_x, other.node, other.spring) / RT
         ttrajs = [np.zeros(len(my_x), dtype=int), np.ones(len(other_x), dtype=int)]
-        mbar = pyemma.thermo.MBAR()
+        mbar = pyemma.thermo.MBAR(maxiter=100000)
         with settings(show_progress_bars=False):
             mbar.estimate((ttrajs, ttrajs, btrajs))
-        return mbar.f_therm[0] - mbar.f_therm[1]
+            df = mbar.f_therm[0] - mbar.f_therm[1]
+            # error computation
+            N_1 = btrajs[0].shape[0]
+            N_2 = btrajs[1].shape[0]
+            u = np.concatenate((btrajs[0], btrajs[1]), axis=0)
+            du = u[:, 1] - u[:, 0]
+            b = (1.0 / (2.0 + 2.0 * np.cosh(df - du - np.log(1.0 * N_1 / N_2)))).sum()  # TODO: check if we are using df with the correct sign!
+            delta_df = 1 / b - (N_1 + N_2) / (N_1 * N_2)
+
+        return df, delta_df, mbar
 
     # TODO: have some version that provides the relative signs (of the scalar product) of neighbors
     def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
@@ -1405,15 +1417,29 @@ class String(object):
             o[-1, -1] = 0.
             return o
 
+    def overlap_by_atom(self, subdir='colvars'):
+        fields =list(self.images_ordered[0].node.dtype.names)
+        overlap = np.zeros((len(self) - 1, len(fields))) + np.nan
+        images_ordered = self.images_ordered
+        for i_im, (a, b) in enumerate(zip(images_ordered[0:-1], images_ordered[1:])):
+            try:
+                for i_field, field in enumerate(fields):
+                    overlap[i_im, i_field] = a.overlap_plane(b, subdir=subdir, fields=field)
+            except FileNotFoundError as e:
+                warnings.warn(str(e))
+        return overlap
+
     def fel(self, subdir='colvars', T=303.15):
         'Compute an estimate of the free energy along the string, by running BAR for adjacent images'
         f = np.zeros(len(self.images) - 1) + np.nan
+        mbar = [None] * (len(self.images) - 1)
+        deltaf = [None] * (len(self.images) - 1)
         for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
             try:
-                f[i] = a.bar(b, subdir=subdir, T=T)
+                f[i], deltaf[i], mbar[i] = a.bar(b, subdir=subdir, T=T)
             except FileNotFoundError as e:
                 warnings.warn(str(e))
-        return f
+        return -np.cumsum(f), deltaf, mbar
 
     def arclength_projections(self, subdir='colvars', order=2, x0=False):
         r'''For all frames in all simulations, compute the arc length order parameter.
@@ -1453,6 +1479,31 @@ class String(object):
             except FileNotFoundError as e:
                 warnings.warn(str(e))
         return results
+
+    def mean_forces(self, subdir='colvars', integrate=False):
+        'Returns the (P)MF in units of [unit of the spring constant] / [unit of length]^2'
+        # RT = 1.985877534E-3 * T  # kcal/mol
+        forces = []
+        fields = list(self.images_ordered[0].node.dtype.names)
+        support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
+        for image in self.images_ordered:
+            for f in fields:
+                if image.spring[f] != image.spring[fields[0]]:
+                    raise NotImplementedError('PMF computation currently only implemented for isotropic forces')
+            try:
+                mean = image.colvars(subdir=subdir, fields=fields)
+                node_proj = Colvars.arclength_projection(structured_to_flat(image.node, fields=fields), support_points, order=2)[0]
+                #print(node_proj)
+                mean_proj = Colvars.arclength_projection(mean.as2D(fields=fields), support_points, order=2)[0]
+                #print(type(mean_proj), type(node_proj), image.spring[fields[0]][0])
+                forces.append((node_proj - mean_proj)*image.spring[fields[0]][0])  # TODO: implement the general anisotropic case
+            except FileNotFoundError as e:
+                forces.append(0.)
+                warnings.warn(str(e))
+        if integrate:
+            return np.cumsum(np.array(forces) * self.image_distance)
+        else:
+            return forces
 
     def mbar(self, subdir='colvars', T=303.15, disc_subdir='colvars', disc_fields=All, disc_centers=None):
         'Estimate all free energies using MBAR (when running with conventional order parameters, not RMSD)'
