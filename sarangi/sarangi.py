@@ -7,10 +7,10 @@ import concurrent.futures
 import subprocess
 import yaml  # replace with json (more portable and future proof)
 import tempfile
-import errno
 import time
 import weakref
 from pyemma.util.annotators import deprecated
+from .util import *
 from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 
 
@@ -54,132 +54,6 @@ def is_sim_id(s):
     if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
         return False
     return True
-
-
-def find(items, keys):
-    try:
-        return True, next(x for x in items if x in keys)
-    except StopIteration:
-        return False, None
-
-
-class AllType(object):
-    'x in All == True for any x'
-    def __contains__(self, key):
-        return True
-
-    def __repr__(self):
-        return 'All'
-
-
-All = AllType()
-
-
-def mkdir(folder):
-    try:
-        os.mkdir(folder)
-    except OSError as e:
-        if e.errno != errno.EEXIST:
-            raise
-
-
-def load_structured(config):
-    'Convert dictionary with numerical values to numpy structured array'
-    dtype_def = []
-    for name, value in config.items():
-        if isinstance(value, list) or isinstance(value, tuple):
-            dtype_def.append((name, np.float64, len(value)))
-        elif isinstance(value, float):
-            dtype_def.append((name, np.float64))
-        elif isinstance(value, int):
-            dtype_def.append((name, int))
-        else:
-            raise RuntimeError('unrecognized type %s', type(value))
-    dtype = np.dtype(dtype_def)
-    array = np.zeros(1, dtype=dtype)
-    for name, value in config.items():
-        array[name] = value  # TODO: do we need special handling of input tuple?
-    return array
-
-
-def dump_structured(array):
-    'Convert numpy structured array to python dictionary'
-    config = {}
-    for n in array.dtype.names:
-        # TODO: what about lists with a single element?
-        if len(array.dtype.fields[n][0].shape) == 1:  # vector type
-            config[n] = [float(x) for x in array[n][0]]
-        elif len(array.dtype.fields[n][0].shape) == 0:  # scalar type
-            config[n] = float(array[n])
-        else:
-            raise ValueError('unsupported dimension')
-    return config
-
-
-def structured_to_flat(recarray, fields=None):
-    r'''Convert numpy structured array to a flat numpy ndarray
-
-    :param recarray: numpy recarray
-    :param fields: list of string
-        If given, fields will be collected in the same order as they are given in the list.
-    :return: numpy ndarray
-        If the input recarray contains multiple time steps, the return value
-        will be two-dimensional.
-    '''
-    if recarray.dtype.names is None:
-        # conventional ndarray
-        if fields is not None and not isinstance(fields, AllType):
-            warnings.warn('User requested fields in a particular order %s, but input is already flat. Continuing and hoping for the best.' % str(fields))
-        n = recarray.shape[0]
-        return recarray.reshape((n, -1))
-    else:
-        if fields is None or isinstance(fields, AllType):
-            fields = recarray.dtype.names
-        n = recarray.shape[0]
-        idx = np.cumsum([0] +
-                        [np.prod(recarray.dtype.fields[name][0].shape, dtype=int) for name in fields])
-        m = idx[-1]
-        x = np.zeros((n, m), dtype=float)
-        for name, start, stop in zip(fields, idx[0:-1], idx[1:]):
-            x[:, start:stop] = recarray[name]
-        assert x.shape[0] == recarray.shape[0]
-        return x
-
-
-def flat_to_structured(array, fields, dims):
-    dtype = np.dtype([(name, np.float64, dim) for name, dim in zip(fields, dims)])
-    indices = np.concatenate(([0], np.cumsum(dims)))
-    # TODO: create simple structured array instead of recarray?
-    colgroups = [array[:, start:stop] for name, start, stop in zip(fields, indices[0:-1], indices[1:])]
-    return np.core.records.fromarrays(colgroups, dtype=dtype)
-
-
-def recarray_average(a, b):
-    if a.dtype.names != b.dtype.names:
-        raise ValueError('a and b must have the same fields')
-    c = np.zeros_like(a)
-    for name in a.dtype.names:
-        c[name] = (a[name] + b[name]) * 0.5
-    return c
-
-
-def recarray_difference(a, b):
-    if a.dtype.names != b.dtype.names:
-        raise ValueError('a and b must have the same fields')
-    c = np.zeros_like(a)
-    for name in a.dtype.names:
-        c[name] = a[name] - b[name]
-    return c
-
-
-def recarray_norm(a, rmsd=True):
-    s = 0.0
-    for name in a.dtype.names:
-        s += np.sum(a[name]**2)
-    if rmsd:
-        return (s / len(a.dtype.names))**0.5
-    else:
-        return s**0.5
 
 
 class Colvars(object):
@@ -343,8 +217,6 @@ class Colvars(object):
 
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
-
-
         #if self.endpoint or other.endpoint:
         #    return 0
         half_log_det_s1 = np.sum(np.log(np.diag(np.linalg.cholesky(self.cov))))
@@ -355,17 +227,18 @@ class Colvars(object):
         return 0.125*np.dot(delta, np.dot(np.linalg.inv(s), delta)) + half_log_det_s - 0.5*half_log_det_s1 - 0.5*half_log_det_s2
 
     @staticmethod
-    def arclength_projection(points, nodes, order=0):
+    def arclength_projection(points, nodes, order=0, return_z=False):
         if order not in [0, 2]:
             raise ValueError('order must be 0 or 2, other orders are not implemented')
         nodes = np.array(nodes)
         if nodes.ndim != 2:
             raise NotImplementedError('Nodes with ndim > 1 are not supported.')
-        results = []
+        results_s = []
+        results_z = []
         for x in points:
             i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
             if order == 0:
-                results.append(i)
+                results_s.append(i)
             elif order == 2:
                 # equation from Grisell Díaz Leines and Bernd Ensing. Phys. Rev. Lett., 109:020601, 2012
                 if i == 0 or i == len(nodes) - 1:  # do orthogonal projection in the first and last segments
@@ -374,8 +247,10 @@ class Colvars(object):
                     else:
                         i0 = len(nodes) - 2
                     a, b = nodes[i0], nodes[i0 + 1]
-                    s = 1. - np.vdot(x - b, a - b) / np.vdot(a - b, a - b)
-                    results.append(i0 + min(max(s, 0.), 1.))  # clamp value between 0 and 1
+                    s = 1. - np.vdot(x - b, a - b) / np.vdot(a - b, a - b)  # x = a => 0; x = b => 1
+                    results_s.append(i0 + min(max(s, 0.), 1.))  # clamp value between 0 and 1
+                    if return_z:
+                        results_z.append(np.linalg.norm(x - (a + s*(b - a))))
                 else:  # for all other segments, continue with Leines and Ensing
                     mid = nodes[i, :]
                     plus = nodes[i + 1, :]
@@ -388,9 +263,16 @@ class Colvars(object):
                     v1v3 = np.vdot(v1, v3)
                     v1v1 = np.vdot(v1, v1)
                     v2v2 = np.vdot(v2, v2)
-                    results.append(
-                         i + (di*(v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3 - v3v3) / (2*v3v3))
-        return results
+                    # TODO: test these expressions
+                    f = ((v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3) / v3v3
+                    s = (f - 1.)*0.5
+                    results_s.append(i + di*s)
+                    if return_z:
+                        results_z.append(np.linalg.norm(x - f*v3 + mid))  # TODO: test
+        if return_z:
+            return results_s, results_z
+        else:
+            return results_s
 
     def closest_point(self, x):
         'Find the replica which is closest to x in order parameters space.'
@@ -999,7 +881,19 @@ class Group(object):
         return counts
 
 
-class String(object):
+def pairing(i, j, ordered=True):
+    return (i + j) * (i + j + 1) // 2 + i
+    #if not tri:
+    #    return (i + j) * (i + j + 1) // 2 + i
+    #else:  # TODO: think about more compact pairing
+    #    return i*(i + 1)//2 + j  # TODO: correct for the ordering of states
+
+
+class Arc(object):
+    pass
+
+
+class String(Arc):
     def __init__(self, branch, iteration, images, image_distance, previous, opaque):
         self.branch = branch
         self.iteration = iteration
@@ -1019,6 +913,15 @@ class String(object):
         str_images = '{' + ', '.join(['%g:%s'%(seq, im) for seq, im in self.images.items()]) + '}'
         return 'String(branch=\'%s\', iteration=%d, images=%s, image_distance=%f, previous=%s, opaque=%s)' % (
             self.branch, self.iteration, str_images, self.image_distance, self.previous, self.opaque)
+
+    def discretize(self, points, states_per_arc=100):
+        # TODO first check compatibility with path (fields)
+        arcs = [self]  # currently we only support one arc, TODO: change this
+        sz = np.array([b.project(points, return_z=True) for b in arcs])
+        best = np.argmin(sz[:, 1])  # find the closest arc for each input point
+        i = np.fromiter((arcs[best_t].i for best_t in best), dtype=int)
+        j = np.fromiter((arcs[best_t].j for best_t in best), dtype=int)
+        return ((pairing(i, j, ordered=False) + sz[best, 0]) * states_per_arc).astype(int)
 
     def empty_copy(self, iteration=None, images=None, previous=None):
         'Creates a copy of the current String object. Image array is left empty.'
@@ -1044,7 +947,7 @@ class String(object):
 
     @property
     def images_ordered(self):
-        'Images ordered by ID, where id_major.id_minor is interpreted as a flaoting point number'
+        'Images ordered by ID, where id_major.id_minor is interpreted as a floating point number'
         return [self.images[key] for key in sorted(self.images.keys())]
 
     @classmethod
@@ -1372,8 +1275,8 @@ class String(object):
                     string['iteration'], iteration))
         image_distance = string['image_distance']
         images_arr = [Image.load(config=img_cfg) for img_cfg in string['images']]
-        images = {image.seq:image for image in images_arr}
-        opaque = {key : config[key] for key in config.keys() if key != 'strings'}
+        images = {image.seq: image for image in images_arr}
+        opaque = {key: config[key] for key in config.keys() if key != 'strings'}
         return String(branch=branch, iteration=iteration, images=images, image_distance=image_distance, previous=None,
                       opaque=opaque)
 
