@@ -133,6 +133,8 @@ def write_image(me, fname_dest_pdb, top_fname):
 
 
 def write_colvar(colvars_file, colvars_template, me):
+    from sarangi.util import flat_to_structured, structured_to_flat, recarray_difference, recarray_vdot
+    import numpy as np
     if not os.path.exists(colvars_template):
         warnings.warn('String archivist was instructed to write create an colvars input file but no template was found.'
                       ' Skipping this step.')
@@ -140,21 +142,50 @@ def write_colvar(colvars_file, colvars_template, me):
 
     with open(colvars_template) as f:
         config = ''.join(f.readlines()) + '\n'
-    for restraint_name, spring_value in me['spring'].items():
-        if 'node' in me and restraint_name in me['node']:
-            center_value = me['node'][restraint_name]
-        else:
-            warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
-            center_value = '0.0'
-        spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
-        center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
+
+    if 'end' in me:  # write colvar for string tangent
+        a = flat_to_structured(me['point'])
+        b = flat_to_structured(me['end'])
+        a_minus_b = recarray_difference(a, b)
+        norm = np.linalg.norm(structured_to_flat(a_minus_b))
+        const = recarray_vdot(a, a_minus_b) / norm
+        expr = ['%f'%const]
+        for field in a_minus_b.dtype.names:
+            for i in range(3):  # TODO: find the correct dimenion
+                expr.append('{field}{dim}*{factor}'.format(field=field, dim=i+1, factor=-a_minus_b[i]/norm))
+
+        config += 'config {{\n' \
+                  '  name tangent\n' \
+                  '  customFunction {{{expression}}}\n'.format(expression='+'.join(expr))
+        # now repeat all colvar definitions but with the name moved inside (see colvar documentation)
+        for colvar in string.colvars:
+            # move name inside
+            config += colvar_asnamd_config(colvar) # TODO; TODO
+        config += '}\n'
+        # add harmonic force
+        spring_value = me['spring'][a_minus_b.dtype.names[0]]  # just pick the first spring value
         config += 'harmonic {{\n' \
-                  'name {restraint_name}_restraint\n' \
-                  'colvars {restraint_name}\n' \
+                  'name tanget_restraint\n' \
+                  'colvars tangent\n' \
                   'forceconstant {spring}\n' \
-                  'centers {center}\n}}\n'.format(restraint_name=restraint_name,
-                                                  center=center_value_namd,
-                                                  spring=spring_value_namd)
+                  'centers 0.0\n}}\n'.format(spring=spring_value)
+
+    else:
+        for restraint_name, spring_value in me['spring'].items():
+            if 'node' in me and restraint_name in me['node']:
+                center_value = me['node'][restraint_name]
+            else:
+                warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
+                center_value = '0.0'
+            spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
+            center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
+            config += 'harmonic {{\n' \
+                      'name {restraint_name}_restraint\n' \
+                      'colvars {restraint_name}\n' \
+                      'forceconstant {spring}\n' \
+                      'centers {center}\n}}\n'.format(restraint_name=restraint_name,
+                                                      center=center_value_namd,
+                                                      spring=spring_value_namd)
     with open(colvars_file, 'w') as f:
         f.write(config)
 

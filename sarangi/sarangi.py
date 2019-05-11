@@ -314,15 +314,17 @@ class Colvars(object):
 # (expose parameters as read-only properties)
 class Image(object):
     def __init__(self, image_id, previous_image_id, previous_frame_number,
-                 node, spring, endpoint, atoms_1, group_id):
+                 node, spring, end, endpoint, atoms_1, group_id, opaque):
         self.image_id = image_id
         self.previous_image_id = previous_image_id
         self.previous_frame_number = previous_frame_number
         self.node = node
+        self.end = end
         self.spring = spring
         self.endpoint = endpoint
         self.atoms_1 = atoms_1
         self.group_id = group_id
+        self.opaque = opaque
         self._colvars = {}
         self._x0 = {}
 
@@ -335,33 +337,6 @@ class Image(object):
                 return False
         return True
 
-    def copy(self, image_id=None, previous_image_id=None, previous_frame_number=None,
-             node=None, spring=None, endpoint=None, atoms_1=None, group_id=None):
-        'Copy the Image object, allowing parameter changes'
-        if image_id is None:
-            image_id = self.image_id
-        if previous_image_id is None:
-            previous_image_id = self.previous_image_id
-        if previous_frame_number is None:
-            previous_frame_number = self.previous_frame_number
-        if node is None:
-            node = self.node.copy()
-        if spring is None:
-            spring = self.spring.copy()
-        if atoms_1 is None:
-            atoms_1 = self.atoms_1
-        if group_id is None:
-            group_id = self.group_id
-
-        if endpoint is None:
-            endpoint = self.endpoint
-        #image_id = '{branch}_{iteration:03d}_{major_id:03d}_{minor_id:03d}'.format(
-        #                branch = branch, iteration=iteration, major_id=major_id, minor_id=minor_id
-        #            )
-        return Image(image_id=image_id, previous_image_id=previous_image_id,
-                     previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1, group_id=group_id)
-
     @classmethod
     def load(cls, config):
         'Load file from dictionary. This function is called by String.load'
@@ -372,6 +347,10 @@ class Image(object):
             node = load_structured(config['node'])
         else:
             node = None
+        if 'end' in config:
+            end = load_structured(config['end'])
+        else:
+            end = None
         if 'spring' in config:
             spring = load_structured(config['spring'])
         else:
@@ -388,10 +367,11 @@ class Image(object):
             group_id = config['group']
         else:
             group_id = None
+        opaque = {key: config[key] for key in config.keys() if key not in ['node', 'end', 'spring', 'atoms_1', 'endpoint', 'group']}
 
         return Image(image_id=image_id, previous_image_id=previous_image_id,
                      previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, endpoint=endpoint, atoms_1=atoms_1, group_id=group_id)
+                     node=node, spring=spring, end=end, endpoint=endpoint, atoms_1=atoms_1, group_id=group_id, opaque=opaque)
 
     def dump(self):
         'Dump state of object to dictionary. Called by String.dump'
@@ -401,12 +381,15 @@ class Image(object):
             config['node'] = dump_structured(self.node)
         if self.spring is not None:
             config['spring'] = dump_structured(self.spring)
+        if self.end is not None:
+            config['node'] = dump_structured(self.node)
         if self.atoms_1 is not None:
             config['atoms_1'] = self.atoms_1
         if self.group_id is not None:
             config['group'] = self.group_id
         if self.endpoint is not None and self.endpoint:
             config['endpoint'] = self.endpoint
+        config.update(self.opaque)
         return config
 
     @property
@@ -889,11 +872,7 @@ def pairing(i, j, ordered=True):
     #    return i*(i + 1)//2 + j  # TODO: correct for the ordering of states
 
 
-class Arc(object):
-    pass
-
-
-class String(Arc):
+class String(object):
     def __init__(self, branch, iteration, images, image_distance, previous, opaque):
         self.branch = branch
         self.iteration = iteration
@@ -1187,7 +1166,7 @@ class String(Arc):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def reparametrize(self, subdir='colvars', fields=All, rmsd=True):
+    def reparametrize(self, subdir='colvars', fields=All, rmsd=True, linear_bias=False):
         'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String.'
 
         # collect all means, in the same time check that all the coordinate dimensions and
@@ -1248,6 +1227,10 @@ class String(Arc):
                               group_id=None)
 
             new_string.images[new_image.seq] = new_image
+
+            if linear_bias:
+                for a, b in zip(new_string.images_ordered[0:-1], new_string.images_ordered[1:]):
+                    a.end = b.node.copy()
 
         return new_string
 
