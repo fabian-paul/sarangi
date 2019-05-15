@@ -440,13 +440,13 @@ class CompoundImage(Image):
             else:
                 warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
                 center_value_namd = '0.0'
-            config += textwrap.dedent(
-                        '''harmonic {{
-                           name {restraint_name}_restraint
-                           colvars {restraint_name}
-                           forceconstant {spring}
-                           centers {center}
-                         }}
+            config += textwrap.dedent('''
+                          harmonic {{
+                            name {restraint_name}_restraint
+                            colvars {restraint_name}
+                            forceconstant {spring}
+                            centers {center}
+                          }}
                          '''.format(restraint_name=restraint_name,
                                     center=center_value_namd,
                                     spring=float(spring_value)))
