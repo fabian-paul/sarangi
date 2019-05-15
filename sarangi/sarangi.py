@@ -4,7 +4,7 @@ import warnings
 import collections
 import concurrent.futures
 import subprocess
-import yaml  # replace with json (more portable and future proof)
+import yaml
 import tempfile
 from .util import *
 from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
@@ -13,18 +13,13 @@ from .image import Image, load_image, interpolate_id
 from .queuing import *
 
 
-# TODO: better handling of "all" fields: if selection "all" is used twice, make sure that the results are compatible
-# TODO: find a better way to handle the "step" column
+# TODO: better handling of "all" fields: this is currently in really bad shape
+# TODO: find a better way to handle the "step" column in NAMD covlar files
 # TODO: offer some rsyc script to copy data
 # TODO: write function that returns the angles between displacements
-# TODO: write function that computes the mean force (and 1-D integrated force)
-# TODO: provide a set of functions/methods that abstract away id and file name generation
-# TODO: provide some plotting functions that takes a dictionary as input with entries image_id -> value
-# TODO: prohibit overwriting of internal parameters to avoid accidental change of parameters during or after simulation
-# (expose parameters as read-only properties)
 
 
-__all__ = ['String', 'root', 'load', 'main', 'init']
+__all__ = ['String', 'root', 'load', 'main']
 __author__ = 'Fabian Paul <fab@physik.tu-berlin.de>'
 
 
@@ -112,6 +107,11 @@ class Group(object):
         if image.seq in self.images:
             warnings.warn('Image with seq %f is already in group %s. Overwriting.' % (image.seq, self.group_id))
         self.images[image.seq] = image
+
+    @property
+    def images_ordered(self):
+        'Images ordered by ID, where id_major.id_minor is interpreted as a floating point number'
+        return [self.images[key] for key in sorted(self.images.keys())]
 
     def _load_permutations(self):
         'Load permutations and return as 2-D numpy array. replica[t, i_bias]'
@@ -444,12 +444,13 @@ class String(object):
             n_atoms = 1
 
         # do the string reparametrization
-        ordered_means = reorder_nodes(nodes=current_means)
+        ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
         nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
                                             d_skip=self.image_distance * n_atoms**0.5 / 2)
 
-        # do self-consistency tests (check distances)
+        # do some self-consistency tests
         eps = 1E-6
+        # check distances
         for i, (a, b) in enumerate(zip(nodes[0:-1], nodes[1:])):
             delta = np.linalg.norm(a - b)
             if delta > self.image_distance * n_atoms ** 0.5 + eps \
@@ -466,7 +467,7 @@ class String(object):
         image_class = self.images_ordered[0].__class__
 
         for i_node, x in enumerate(nodes):
-            # we have to convert the unrealized nodes to realized frames
+            # we have to convert the unrealized nodes (predicted point of conformational space) to realized frames
             node = flat_to_structured(x[np.newaxis, :], fields=real_fields, dims=dims)
             responses = []
             for im in self.images.values():
@@ -480,7 +481,8 @@ class String(object):
 
             new_image = image_class(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
                                     previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                                    node=node, terminal=None, spring=best_image.spring.copy(), group_id=None)
+                                    node=node, terminal=None, spring=best_image.spring.copy(),
+                                    group_id=best_image.group_id)
 
             new_string.images[new_image.seq] = new_image
 
@@ -590,12 +592,21 @@ class String(object):
                 warnings.warn(str(e))
         return -np.cumsum(f), deltaf, mbar
 
-    def arclength_projections(self, subdir='colvars', order=2, x0=False):
+    def arclength_projections(self, subdir='colvars', order=1, x0=False):
         r'''For all frames in all simulations, compute the arc length order parameter.
+
+        Parameters
+        ----------
+        order: int
+            Interpolation order for the computation of arc length. Can take the values
+            0, 1, or 2.
+        subdir: str
+            If working with non-default string setup, set this to the folder name for
+            the collective variable trajectories.
 
         Notes
         -----
-        This function is ideal for a simplified visualization of ensemble overlap.
+        This function is ideal for a simplified 1-D visualization of ensemble overlap.
 
         arc = string.arclength_projections()
         plt.figure(figsize=(15, 5))
@@ -630,7 +641,18 @@ class String(object):
         return results
 
     def mean_forces(self, subdir='colvars', integrate=False):
-        'Returns the (P)MF in units of [unit of the spring constant] / [unit of length]^2'
+        r'''Returns the (P)MF in units of [unit of the spring constant] / [unit of length]^2
+
+        Parameters
+        ----------
+        integrate: boolean
+            If set to true, multiply mean forces with the image distance and compute cumulative sums.
+            This is first order integration of the force along the string.
+
+        Note
+        ----
+        Forces are always projected on the string.
+        '''
         # RT = 1.985877534E-3 * T  # kcal/mol
         forces = []
         fields = list(self.images_ordered[0].node.dtype.names)

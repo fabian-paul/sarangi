@@ -451,6 +451,9 @@ class CompoundImage(Image):
         return config
 
     def _linear_namd_conf(self, cwd):
+        if self.colvars_def is None or 'compound' not in self.colvars_def:
+            raise RuntimeError('MD setup with linear order parameter (linearly directed bias) was requested but, plan file '
+                               'does not contain definitions of the collective variables. Can\'t create MD setup file.')
         config = ''
         a = self.node
         b = self.terminal
@@ -468,7 +471,7 @@ class CompoundImage(Image):
                        customFunction {{{expression}}}
                   '''.format(expression='+'.join(expr))
         # now repeat all colvar definitions but with the name moved inside (see colvar documentation)
-        for colvar in self.colvars_def:
+        for colvar in self.colvars_def['compound']:
             # name is inside in contrast to the "normal" colvar definition
             if 'type' in colvar and colvar['type'] != 'com':
                 warnings.warn('Found colvars def of type %s, don\'t know how to handle.')
@@ -499,13 +502,13 @@ class CartesianImage(Image):
     # NAMD conf will expand to eigenvector and a RMSD object with a single harmonic force (that does not contain a center)
     # spring is a scalar
 
-    @classmethod
-    def from_pdb(cls, fname_pdb, atom_indices, system, frame_number=0, top=None):
-        import mdtraj
-        frame = mdtraj.load_frame(filename=fname_pdb, index=frame_number, top=top)
-        conformation = frame.atom_slice(atom_indices=atom_indices)
-
-        return CartesianImage(system=system)
+    #@classmethod
+    #def from_pdb(cls, fname_pdb, atom_indices, system, frame_number=0, top=None):
+    #    import mdtraj
+    #    frame = mdtraj.load_frame(filename=fname_pdb, index=frame_number, top=top)
+    #    conformation = frame.atom_slice(atom_indices=atom_indices)
+    #
+    #    return CartesianImage(colvar_def=colvar_def)
 
     def __init__(self, image_id, previous_image_id, previous_frame_number, node, spring, terminal=None,
                  orthogonal_spring=None, group_id=None, colvars_def=None, opaque=None):
