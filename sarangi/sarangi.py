@@ -67,7 +67,7 @@ class Group(object):
         if isinstance(key, float) or isinstance(key, int):
             return self.images[float(key)]
         elif isinstance(key, str):
-            return next(im for im in self.images if im.image_id == key)
+            return next(im for im in self.images.values() if im.image_id == key)
         else:
             raise ValueError('key is neither a number nor a string, don\'t know what to do with it.')
 
@@ -184,7 +184,7 @@ class String(object):
         if isinstance(key, float) or isinstance(key, int):
             return self.images[float(key)]
         elif isinstance(key, str):
-            return next(im for im in self.images if im.image_id == key)
+            return next(im for im in self.images.values() if im.image_id == key)
         else:
             raise ValueError('key is neither a number nor a string, don\'t know what to do with it.')
 
