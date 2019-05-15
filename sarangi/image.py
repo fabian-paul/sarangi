@@ -431,15 +431,14 @@ class CompoundImage(Image):
     def _isotropic_namd_conf(self, cwd):
         # for fun we could redefine all the colvars form the information in the plan file
         config = ''
-        for restraint_name in self.spring.dtype.names:
+        for restraint_name in self.fields:
             spring_value = self.spring[restraint_name]
             if self.node is not None and restraint_name in self.node.dtype.names:
                 center_value = self.node[restraint_name]
+                center_value_namd = '(' + ' , '.join([str(x) for x in center_value[0]]) + ')'
             else:
                 warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
-                center_value = '0.0'
-            spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
-            center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
+                center_value_namd = '0.0'
             config += '''harmonic {{
                            name {restraint_name}_restraint
                            colvars {restraint_name}
@@ -448,7 +447,7 @@ class CompoundImage(Image):
                          }}
                          '''.format(restraint_name=restraint_name,
                                     center=center_value_namd,
-                                    spring=spring_value_namd)
+                                    spring=float(spring_value))
         return config
 
     def _linear_namd_conf(self, cwd):
