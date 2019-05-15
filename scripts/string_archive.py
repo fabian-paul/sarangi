@@ -4,41 +4,13 @@ import mdtraj
 import os
 import shutil
 import warnings
+import sarangi
+from sarangi.util import root
 
 
-__all__ = ['root', 'save_coor', 'save_xsc', 'load_plan', 'store', 'extract', 'write_image', 'write_colvar',
-           'load_image']
-
+__all__ = ['save_coor', 'save_xsc', 'load_plan', 'store', 'extract', 'write_image_coordinates', 'write_colvar',
+           'load_initial_coordinates']
 # Currently this script is independent from the sarangi library and implements its own functions for reading plan files.
-
-
-def root():
-    if 'STRING_SIM_ROOT' in os.environ:
-        return os.environ['STRING_SIM_ROOT']
-    else:
-        folder = os.path.realpath('.')
-        while not os.path.exists(os.path.join(folder, '.sarangirc')) and folder != '/':
-            # print('looking at', folder)
-            folder = os.path.realpath(os.path.join(folder, '..'))
-        if os.path.exists(os.path.join(folder, '.sarangirc')):
-            return folder
-        else:
-            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and'
-                               ' no .sarangirc file was found.')
-
-
-def is_sim_id(s):
-    try:
-        fields = s.split('_')
-        if len(fields) != 4:
-            return False
-        if not fields[0][0].isalpha():
-            return False
-        if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
-            return False
-        return True
-    except Exception as e:
-        return False
 
 
 def sim_id_to_seq(s):
@@ -72,15 +44,30 @@ def save_xsc(traj, fname, frame=0):
     # frame.save_netcdfrst(fname_dest)
 
 
-def load_plan(fname_plan, sim_id=None):
-    import yaml
-    with open(fname_plan) as f:
-        plan = yaml.load(f)
-    string = plan['strings'][0]
-    if sim_id is None:
-        return string
+def load_plan(fname_plan, alive=False):
+    if not alive:
+        import yaml
+        with open(fname_plan) as f:
+            plan = yaml.load(f)
+        return plan
     else:
-        return next(i for i in string['images'] if i['id'] == sim_id)
+        return sarangi.String.load(fname_plan)
+
+
+def load_image(fname_plan, sim_id=None, return_plan=False, alive=False):
+    if not alive:
+        plan = load_plan(fname_plan=fname_plan, alive=False)
+        string = plan['strings'][0]
+        image = next(i for i in string['images'] if i['id'] == sim_id)
+    else:
+        string = load_plan(fname_plan=fname_plan, alive=True)
+        image = string.images[sim_id]
+
+    if return_plan:
+        return image, plan
+    else:
+        return image
+
 
 
 def store(fname_trajectory, fname_colvars_traj, sim_id):
@@ -110,7 +97,7 @@ def extract(me, fname_dest_coor, fname_dest_box, top, number=-1):
     save_xsc(frame, fname_dest_box)
 
 
-def load_image(me, top_fname):
+def load_initial_coordinates(me, top_fname):
     prev_id = me['prev_image_id']
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
@@ -121,20 +108,27 @@ def load_image(me, top_fname):
     return frame
 
 
-def write_image(me, fname_dest_pdb, top_fname):
+def write_image_coordinates(me, fname_dest_pdb, top_fname):
     if 'atoms_1' not in me:
         warnings.warn('String archivist was instructed to write an image file but the plan does not contain an atom '
                       'reference. Skipping this step.')
         return
-    frame = load_image(me, top_fname)
+    frame = load_initial_coordinates(me, top_fname)
     atoms = me['atoms_1']
     b_factors = [1 if (i + 1) in atoms else 0 for i in range(frame.top.n_atoms)]
     frame.save_pdb(fname_dest_pdb, bfactors=b_factors)
 
 
-def write_colvar(colvars_file, colvars_template, me):
+def write_colvar(colvars_file, plan, colvars_template, me):
     from sarangi.util import flat_to_structured, structured_to_flat, recarray_difference, recarray_vdot
     import numpy as np
+
+    default_colvars_template = '$STRING_SIM_ROOT/setup/colvars.template'  # code should select which colvars to use
+    if 'colvars' in plan and 'template_file' in plan['colvars']:
+        colvars_template = os.path.expandvars(plan['colvars']['template_file'])
+    else:
+        colvars_template = os.path.expandvars(default_colvars_template)
+
     if not os.path.exists(colvars_template):
         warnings.warn('String archivist was instructed to write create an colvars input file but no template was found.'
                       ' Skipping this step.')
@@ -143,49 +137,50 @@ def write_colvar(colvars_file, colvars_template, me):
     with open(colvars_template) as f:
         config = ''.join(f.readlines()) + '\n'
 
-    if 'end' in me:  # write colvar for string tangent
-        a = flat_to_structured(me['point'])
-        b = flat_to_structured(me['end'])
-        a_minus_b = recarray_difference(a, b)
-        norm = np.linalg.norm(structured_to_flat(a_minus_b))
-        const = recarray_vdot(a, a_minus_b) / norm
-        expr = ['%f'%const]
-        for field in a_minus_b.dtype.names:
-            for i in range(3):  # TODO: find the correct dimenion
-                expr.append('{field}{dim}*{factor}'.format(field=field, dim=i+1, factor=-a_minus_b[i]/norm))
-
-        config += 'config {{\n' \
-                  '  name tangent\n' \
-                  '  customFunction {{{expression}}}\n'.format(expression='+'.join(expr))
-        # now repeat all colvar definitions but with the name moved inside (see colvar documentation)
-        for colvar in string.colvars:
-            # move name inside
-            config += colvar_asnamd_config(colvar) # TODO; TODO
-        config += '}\n'
-        # add harmonic force
-        spring_value = me['spring'][a_minus_b.dtype.names[0]]  # just pick the first spring value
-        config += 'harmonic {{\n' \
-                  'name tanget_restraint\n' \
-                  'colvars tangent\n' \
-                  'forceconstant {spring}\n' \
-                  'centers 0.0\n}}\n'.format(spring=spring_value)
-
-    else:
-        for restraint_name, spring_value in me['spring'].items():
-            if 'node' in me and restraint_name in me['node']:
-                center_value = me['node'][restraint_name]
-            else:
-                warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
-                center_value = '0.0'
-            spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
-            center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
-            config += 'harmonic {{\n' \
-                      'name {restraint_name}_restraint\n' \
-                      'colvars {restraint_name}\n' \
-                      'forceconstant {spring}\n' \
-                      'centers {center}\n}}\n'.format(restraint_name=restraint_name,
-                                                      center=center_value_namd,
-                                                      spring=spring_value_namd)
+    config += image.write_namd_conf(cwd=os.getcwd())
+    #if 'end' in me:  # write colvar for string tangent
+    #    a = flat_to_structured(me['point'])
+    #    b = flat_to_structured(me['end'])
+    #    a_minus_b = recarray_difference(a, b)
+    #    norm = np.linalg.norm(structured_to_flat(a_minus_b))
+    #    const = recarray_vdot(a, a_minus_b) / norm
+    #    expr = ['%f'%const]
+    #    for field in a_minus_b.dtype.names:
+    #        for i in range(3):  # TODO: find the correct dimension
+    #            expr.append('{field}{dim}*{factor}'.format(field=field, dim=i+1, factor=-a_minus_b[i]/norm))
+    #
+    #    config += 'config {{\n' \
+    #              '  name tangent\n' \
+    #              '  customFunction {{{expression}}}\n'.format(expression='+'.join(expr))
+    #    # now repeat all colvar definitions but with the name moved inside (see colvar documentation)
+    #    for colvar in plan['colvars']:
+    #        # move name inside
+    #        config += colvar_asnamd_config(colvar) # TODO; TODO; TODO: copy from image.py !
+    #    config += '}\n'
+    #    # add harmonic force
+    #    spring_value = me['spring'][a_minus_b.dtype.names[0]]  # just pick the first spring value
+    #    config += 'harmonic {{\n' \
+    #              'name tanget_restraint\n' \
+    #              'colvars tangent\n' \
+    #              'forceconstant {spring}\n' \
+    #              'centers 0.0\n}}\n'.format(spring=spring_value)
+    #
+    #else:
+    #    for restraint_name, spring_value in me['spring'].items():
+    #        if 'node' in me and restraint_name in me['node']:
+    #            center_value = me['node'][restraint_name]
+    #        else:
+    #            warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
+    #            center_value = '0.0'
+    #        spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
+    #        center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
+    #        config += 'harmonic {{\n' \
+    #                  'name {restraint_name}_restraint\n' \
+    #                  'colvars {restraint_name}\n' \
+    #                  'forceconstant {spring}\n' \
+    #                  'centers {center}\n}}\n'.format(restraint_name=restraint_name,
+    #                                                  center=center_value_namd,
+    #                                                  spring=spring_value_namd)
     with open(colvars_file, 'w') as f:
         f.write(config)
 
@@ -289,17 +284,17 @@ if __name__ == '__main__':
     elif args.command == 'extract':
         sim_id = os.path.expandvars(args.id)
         top = os.path.expandvars(args.top)
-        me = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=sim_id)
+        me, plan = load_image(fname_plan=os.path.expandvars(args.plan), sim_id=sim_id, return_plan=True)
         extract(me=me, fname_dest_coor=args.coordinates, fname_dest_box=args.box, top=top, number=int(args.frame))
 
-        write_colvar(me=me, colvars_file=args.colvars, colvars_template=os.path.expandvars(args.colvars_template))
+        write_colvar(me=me, plan=plan, colvars_file=args.colvars, colvars_template=os.path.expandvars(args.colvars_template))
 
-        write_image(me=me, fname_dest_pdb=args.image, top_fname=top)
+        write_image_coordinates(me=me, fname_dest_pdb=args.image, top_fname=top)
 
     elif args.command == 'replica_extract':
         top = os.path.expandvars(args.top)
         group_id = os.path.expandvars(args.id)
-        string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
+        string = load_plan(fname_plan=os.path.expandvars(args.plan))['strings'][0]
 
         # write bias definition
         write_re_config(string=string, group_id=group_id, bias_conf_fname=args.config)
@@ -311,7 +306,7 @@ if __name__ == '__main__':
 
     if args.command == 'replica_store':
         group_id = os.path.expandvars(args.id)
-        string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
+        string = load_plan(fname_plan=os.path.expandvars(args.plan))['strings'][0]
         for i, image in enumerate(sorted_images(string, group_id=group_id)):
             print('replica-store: out.%d.sort.dcd -> %s' % (i, image['id']))
             store(fname_trajectory='out.%d.sort.dcd' % i, fname_colvars_traj='out.%d.sort.colvars.traj' % i, sim_id=image['id'])

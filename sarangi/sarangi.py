@@ -1,755 +1,41 @@
 import numpy as np
 import os
-import glob
 import warnings
 import collections
 import concurrent.futures
 import subprocess
 import yaml  # replace with json (more portable and future proof)
 import tempfile
-import time
-import weakref
-from pyemma.util.annotators import deprecated
 from .util import *
 from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
+from .colvars import Colvars
+from .image import Image, load_image, interpolate_id
+from .queuing import *
 
 
 # TODO: better handling of "all" fields: if selection "all" is used twice, make sure that the results are compatible
 # TODO: find a better way to handle the "step" column
 # TODO: offer some rsyc script to copy data
-#
+# TODO: write function that returns the angles between displacements
+# TODO: write function that computes the mean force (and 1-D integrated force)
+# TODO: provide a set of functions/methods that abstract away id and file name generation
+# TODO: provide some plotting functions that takes a dictionary as input with entries image_id -> value
+# TODO: prohibit overwriting of internal parameters to avoid accidental change of parameters during or after simulation
+# (expose parameters as read-only properties)
 
-__all__ = ['String', 'Image', 'root', 'load', 'main', 'init', 'is_sim_id', 'All']
+
+__all__ = ['String', 'root', 'load', 'main', 'init']
 __author__ = 'Fabian Paul <fab@physik.tu-berlin.de>'
 
 
-# TODO: write function that returns the angles between displacements
-# TODO: write function that computes the mean force (and 1-D integrated force)
-
-def root():
-    'Return absolute path to the root directory of the project.'
-    if 'STRING_SIM_ROOT' in os.environ:
-        return os.environ['STRING_SIM_ROOT']
-    else:
-        folder = os.path.realpath('.')
-        while not os.path.exists(os.path.join(folder, '.sarangirc')) and folder != '/':
-            # print('looking at', folder)
-            folder = os.path.realpath(os.path.join(folder, '..'))
-        if os.path.exists(os.path.join(folder, '.sarangirc')):
-            return folder
-        else:
-            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and no .sarangirc file was found.')
-
-# TODO: provide a set of functions/methods that abstract away id and file name generation
-
-# TODO: provide some plotting functions that takes a dictionary as input with entries image_id -> value
-
-
-def is_sim_id(s):
-    fields = s.split('_')
-    if len(fields) != 4:
-        return False
-    if not fields[0][0].isalpha():
-        return False
-    if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
-        return False
-    return True
-
-
-class Colvars(object):
-    def __init__(self, folder, base, fields=All):
-        self._mean = None
-        self._var = None
-        self._cov = None
-        fname = folder + '/' + base
-        if os.path.exists(fname + '.colvars.traj'):
-            self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
-        elif os.path.exists(fname + '.npy'):
-            self._colvars = np.load(fname + '.npy')
-            if not isinstance(fields, AllType):
-                #print('Hello fields!', fields, type(fields))
-                self._colvars = self._colvars[fields]
-        # TODO: support pdb format for later use for gap detection!
-        else:
-            raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)
-
-    @staticmethod
-    def parse_line(tokens):
-        'Convert line from colvsars.traj.file to a list of values and a list of vector dimensions'
-        in_vector = False
-        dims = []
-        dim = 1
-        values = list()
-        for t in tokens:
-            if t == '(':
-                assert not in_vector
-                in_vector = True
-                dim = 1
-            elif t == ')':
-                assert in_vector
-                in_vector = False
-                dims.append(dim)
-                dim = 1
-            elif t == ',':
-                assert in_vector
-                dim += 1
-            else:
-                values.append(float(t))
-                if not in_vector:
-                    dims.append(dim)
-        return values, dims
-
-    @staticmethod
-    def load_colvar(fname, selection=All):
-        'Load a colvars.traj file and convert to numpy recarray (with field names taken form the file header)'
-        rows = []
-        with open(fname) as f:
-            for line in f:
-                tokens = line.split()
-                if tokens[0] == '#':
-                    var_names = tokens[1:]
-                else:
-                    values, dims = Colvars.parse_line(tokens)
-                    rows.append(values)
-        assert len(var_names) == len(dims)
-        assert len(rows[0]) == sum(dims)
-        data = np.array(rows[1:])  # ignore the zero'th row, since this is just the initial condition (in NAMD)
-
-        if selection is None:
-            selection = All
-        elif isinstance(selection, str):
-            selection = [selection]
-
-        # convert to structured array
-        dtype_def = []
-        for name, dim in zip(var_names, dims):
-            # print(name, 'is in selection?', name in selection)
-            if name in selection:
-                if dim == 1:
-                    dtype_def.append((name, np.float64, 1))
-                else:
-                    dtype_def.append((name, np.float64, dim))
-        #print('dtype_def is', dtype_def)
-        dtype = np.dtype(dtype_def)
-
-        indices = np.concatenate(([0], np.cumsum(dims)))
-        colgroups = [np.squeeze(data[:, start:stop]) for name, start, stop in zip(var_names, indices[0:-1], indices[1:])
-                        if name in selection]
-        # for c,n in zip(colgroups, dtype.names):
-        #    print(c.shape, n, dtype.fields[n][0].shape)
-        # TODO: can't we create the structured array directly from the rows?
-        return np.core.records.fromarrays(colgroups, dtype=dtype)
-
-    def _compute_moments(self):
-        if self._mean is None or self._var is None:
-            pcoords = self._colvars
-            if pcoords.dtype.names is None:
-                self._mean = np.mean(pcoords, axis=0)
-                self._var = np.var(pcoords, axis=0)
-            else:
-                self._mean = np.zeros(1, pcoords.dtype)
-                for n in pcoords.dtype.names:
-                    self._mean[n] = np.mean(pcoords[n], axis=0)
-                self._var = np.zeros(1, pcoords.dtype)
-                for n in pcoords.dtype.names:
-                    self._var[n] = np.var(pcoords[n], axis=0)
-            #mean_free = pcoords - mean[np.newaxis, :]
-            #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
-            #self._mean = mean
-            #self._cov = cov
-
-    def __getitem__(self, items):
-        return self._colvars[items]
-
-    def __len__(self):
-        return self._colvars.shape[0]
-
-    def as2D(self, fields):
-        'Convert to plain 2-D numpy array where the first dimension is time'
-        return structured_to_flat(self._colvars, fields=fields)
-
-    @property
-    def mean(self):
-        self._compute_moments()
-        return self._mean
-
-    @property
-    def var(self):
-        self._compute_moments()
-        return self._var
-
-    @property
-    def cov(self):
-        self._compute_moments()
-        return self._cov
-
-    def overlap_plane(self, other, indicator='max'):
-        'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
-        import sklearn.svm
-        clf = sklearn.svm.LinearSVC()
-        X_self = self.as2D(fields=All)
-        X_other = other.as2D(fields=All)
-        X = np.vstack((X_self, X_other))
-        n_self = X_self.shape[0]
-        n_other = X_other.shape[0]
-        labels = np.zeros(n_self + n_other, dtype=int)
-        labels[n_self:] = 1
-        clf.fit(X, labels)
-        c = np.zeros((2, 2), dtype=int)
-        p_self = clf.predict(X_self)
-        p_other = clf.predict(X_other)
-        c[0, 0] = np.count_nonzero(p_self == 0)
-        c[0, 1] = np.count_nonzero(p_self == 1)
-        c[1, 0] = np.count_nonzero(p_other == 0)
-        c[1, 1] = np.count_nonzero(p_other == 1)
-        c_sum = c.sum(axis=1)
-        c_norm = c / c_sum[:, np.newaxis]
-        if indicator == 'max':
-            return max(c_norm[0, 1], c_norm[1, 0])
-        elif indicator == 'min':
-            return min(c_norm[0, 1], c_norm[1, 0])
-        elif indicator == 'down':
-            return c_norm[1, 0]  # other -> self
-        elif indicator == 'up':
-            return c_norm[0, 1]  # self -> other
-        else:
-            return c_norm
-
-    def overlap_Bhattacharyya(self, other):
-        # https://en.wikipedia.org/wiki/Bhattacharyya_distance
-        #if self.endpoint or other.endpoint:
-        #    return 0
-        half_log_det_s1 = np.sum(np.log(np.diag(np.linalg.cholesky(self.cov))))
-        half_log_det_s2 = np.sum(np.log(np.diag(np.linalg.cholesky(other.cov))))
-        s = 0.5*(self.cov + other.cov)
-        half_log_det_s = np.sum(np.log(np.diag(np.linalg.cholesky(s))))
-        delta = self.mean - other.mean
-        return 0.125*np.dot(delta, np.dot(np.linalg.inv(s), delta)) + half_log_det_s - 0.5*half_log_det_s1 - 0.5*half_log_det_s2
-
-    @staticmethod
-    def arclength_projection(points, nodes, order=0, return_z=False):
-        if order not in [0, 2]:
-            raise ValueError('order must be 0 or 2, other orders are not implemented')
-        nodes = np.array(nodes)
-        if nodes.ndim != 2:
-            raise NotImplementedError('Nodes with ndim > 1 are not supported.')
-        results_s = []
-        results_z = []
-        for x in points:
-            i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
-            if order == 0:
-                results_s.append(i)
-            elif order == 2:
-                # equation from Grisell Díaz Leines and Bernd Ensing. Phys. Rev. Lett., 109:020601, 2012
-                if i == 0 or i == len(nodes) - 1:  # do orthogonal projection in the first and last segments
-                    if i == 0:
-                        i0 = 0
-                    else:
-                        i0 = len(nodes) - 2
-                    a, b = nodes[i0], nodes[i0 + 1]
-                    s = 1. - np.vdot(x - b, a - b) / np.vdot(a - b, a - b)  # x = a => 0; x = b => 1
-                    results_s.append(i0 + min(max(s, 0.), 1.))  # clamp value between 0 and 1
-                    if return_z:
-                        results_z.append(np.linalg.norm(x - (a + s*(b - a))))
-                else:  # for all other segments, continue with Leines and Ensing
-                    mid = nodes[i, :]
-                    plus = nodes[i + 1, :]
-                    minus = nodes[i - 1, :]
-                    v3 = plus - mid
-                    v3v3 = np.vdot(v3, v3)
-                    di = 1. #np.sign(i2 - i1)
-                    v1 = mid - x
-                    v2 = x - minus
-                    v1v3 = np.vdot(v1, v3)
-                    v1v1 = np.vdot(v1, v1)
-                    v2v2 = np.vdot(v2, v2)
-                    # TODO: test these expressions
-                    f = ((v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3) / v3v3
-                    s = (f - 1.)*0.5
-                    results_s.append(i + di*s)
-                    if return_z:
-                        results_z.append(np.linalg.norm(x - f*v3 + mid))  # TODO: test
-        if return_z:
-            return results_s, results_z
-        else:
-            return results_s
-
-    def closest_point(self, x):
-        'Find the replica which is closest to x in order parameters space.'
-        #print('input shapes', self.as2D.shape, recscalar_to_vector(x).shape)
-        dist = np.linalg.norm(self.as2D(fields=self.fields) - structured_to_flat(x, fields=self.fields), axis=1)
-        #print('dist shape', dist.shape)
-        i = np.argmin(dist)
-        return {'i': int(i),
-                'd': dist[i],
-                'x': self._colvars[i]}
-
-    def distance_of_mean(self, other, rmsd=True):
-        'Compute the distance between the mean of this window and the mean of some other window.'
-        if rmsd:
-            n_atoms = len(self._colvars.dtype.names)
-            # TODO: assert the each atoms entry has dimension 3
-        else:
-            n_atoms = 1
-        return np.linalg.norm(structured_to_flat(self.mean) - structured_to_flat(other.mean, fields=self.fields)) * (n_atoms ** -0.5)
-
-    @property
-    def fields(self):
-        'Variable names (from colvars.traj header or npy file)'
-        return self._colvars.dtype.names
-
-    @property
-    def dims(self):
-        res = []
-        for n in self.fields:
-            shape = self._colvars.dtype.fields[n][0].shape
-            if len(shape) == 0:
-                res.append(1)
-            else:
-                res.append(shape[0])
-        return res
-
-
-# TODO: prohibit overwriting of internal parameters to avoid accidental change of parameters during or after simulation
-# (expose parameters as read-only properties)
-class Image(object):
-    def __init__(self, image_id, previous_image_id, previous_frame_number,
-                 node, spring, end, endpoint, atoms_1, group_id, opaque):
-        self.image_id = image_id
-        self.previous_image_id = previous_image_id
-        self.previous_frame_number = previous_frame_number
-        self.node = node
-        self.end = end
-        self.spring = spring
-        self.endpoint = endpoint
-        self.atoms_1 = atoms_1
-        self.group_id = group_id
-        self.opaque = opaque
-        self._colvars = {}
-        self._x0 = {}
-
-    def __str__(self):
-        return self.image_id
-
-    def __eq__(self, other):
-        for key in ['image_id', 'previous_image_id', 'previous_frame_number', 'node', 'spring', 'endpoint', 'atoms_1', 'group_id']:
-            if  self.__dict__[key] != other.__dict__[key]:
-                return False
-        return True
-
-    @classmethod
-    def load(cls, config):
-        'Load file from dictionary. This function is called by String.load'
-        image_id = config['id']
-        previous_image_id = config['prev_image_id']
-        previous_frame_number = config['prev_frame_number']
-        if 'node' in config:
-            node = load_structured(config['node'])
-        else:
-            node = None
-        if 'end' in config:
-            end = load_structured(config['end'])
-        else:
-            end = None
-        if 'spring' in config:
-            spring = load_structured(config['spring'])
-        else:
-            spring = None
-        if 'atoms_1' in config:
-            atoms_1 = config['atoms_1']
-        else:
-            atoms_1 = None
-        if 'endpoint' in config:
-            endpoint = config['endpoint']
-        else:
-            endpoint = False
-        if 'group' in config:
-            group_id = config['group']
-        else:
-            group_id = None
-        opaque = {key: config[key] for key in config.keys() if key not in ['node', 'end', 'spring', 'atoms_1', 'endpoint', 'group']}
-
-        return Image(image_id=image_id, previous_image_id=previous_image_id,
-                     previous_frame_number=previous_frame_number,
-                     node=node, spring=spring, end=end, endpoint=endpoint, atoms_1=atoms_1, group_id=group_id, opaque=opaque)
-
-    def dump(self):
-        'Dump state of object to dictionary. Called by String.dump'
-        config = {'id': self.image_id, 'prev_image_id': self.previous_image_id,
-                  'prev_frame_number': self.previous_frame_number}
-        if self.node is not None:
-            config['node'] = dump_structured(self.node)
-        if self.spring is not None:
-            config['spring'] = dump_structured(self.spring)
-        if self.end is not None:
-            config['node'] = dump_structured(self.node)
-        if self.atoms_1 is not None:
-            config['atoms_1'] = self.atoms_1
-        if self.group_id is not None:
-            config['group'] = self.group_id
-        if self.endpoint is not None and self.endpoint:
-            config['endpoint'] = self.endpoint
-        config.update(self.opaque)
-        return config
-
-    @property
-    def propagated(self):
-        'MD simulation was completed.'
-        if os.path.exists(self.base + '.dcd'):
-            return True
-        for folder in os.listdir(self.colvar_root):
-            if os.path.exists('%s/%s/%s.colvars.traj' % (self.colvar_root, folder, self.image_id)):
-                return True
-            if os.path.exists('%s/%s/%s.npy' % (self.colvar_root, folder, self.image_id)):
-                return True
-        return False
-
-    def _make_job_file(self, env): # TODO: move into gobal function
-        'Created a submission script for the job on the local file system.'
-        with open('%s/setup/jobfile.template' % root()) as f:
-            template = ''.join(f.readlines())
-            environment = '\n'.join(['export %s=%s' % (k, v) for k, v in env.items()])
-        with tempfile.NamedTemporaryFile(suffix='.sh', delete=False) as f:
-            f.write(template.format(job_name=self.job_name, environment=environment).encode(encoding='UTF-8'))
-            job_file_name = f.name
-        return job_file_name
-
-    @property
-    def branch(self):
-        return self.image_id.split('_')[0]
-
-    @property
-    def iteration(self):
-        return int(self.image_id.split('_')[1])
-
-    @property
-    def id_major(self):
-        return int(self.image_id.split('_')[2])
-
-    @property
-    def id_minor(self):
-        return int(self.image_id.split('_')[3])
-
-    @property
-    def seq(self):
-        'id_major.in_minor as a floating point number'
-        return float('%03d.%03d' % (self.id_major, self.id_minor))
-
-    @property
-    def job_name(self):
-        return 'im_' + self.image_id
-
-    @property
-    def base(self):
-        'Base path of the image. base+".dcd" is the path to the MD data.'
-        return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-               root=root(), branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
-
-    @property
-    def previous_base(self):
-        branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
-        return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-               root=root(), branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
-
-    def _make_env(self, random_number):
-        env = dict()
-        root_ = root()
-        # TODO: clean up this list a little, since the job script has access to the plan file anyway
-        env['STRING_SIM_ROOT'] = root_
-        env['STRING_ITERATION'] = str(self.iteration)
-        env['STRING_BRANCH'] = self.branch
-        env['STRING_IMAGE_ID'] = self.image_id
-        env['STRING_PLAN'] = '{root}/strings/{branch}_{iteration:03d}/plan.yaml'.format(root=root_, branch=self.branch, iteration=self.iteration)
-        env['STRING_PREV_IMAGE_ID'] = self.previous_image_id
-        env['STRING_PREV_FRAME_NUMBER'] = str(self.previous_frame_number)
-        env['STRING_RANDOM'] = str(random_number)
-        env['STRING_PREV_ARCHIVE'] = self.previous_base
-        env['STRING_ARCHIVE'] = self.base
-        env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
-        env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
-        env['STRING_BASE'] = '{root}/strings/{branch}_{iteration:03d}'.format(root=root_,
-                                                                              branch=self.branch,
-                                                                              iteration=self.iteration)
-        env['STRING_OBSERVABLES_BASE'] = '{root}/observables/{branch}_{iteration:03d}'.format(root=root_,
-                                                                                              branch=self.branch,
-                                                                                              iteration=self.iteration)
-        return env
-
-    def propagate(self, random_number, wait, queued_jobs, run_locally=False, dry=False):
-        'Generic propagation command. Submits jobs for the intermediate points. Copies the end points.'
-        if self.propagated:
-            return self
-
-        #  if the job is already queued, return or wait and return then
-        if self.job_name in queued_jobs:
-            print('skipping submission of', self.job_name, 'because already queued')
-            if wait:  # poll the results file
-                while not self.propagated:
-                    time.sleep(30)
-            else:
-                return self
-
-        env = self._make_env(random_number=random_number)
-
-        if run_locally:
-            job_file = self._make_job_file(env)
-            print('run', job_file, '(', self.job_name, ')')
-            if not dry:
-                subprocess.run('bash ' + job_file, shell=True)  # directly execute the job file
-        else:
-            job_file = self._make_job_file(env)
-            if wait:
-                command = 'qsub --wait ' + job_file  # TODO: slurm (sbatch)
-                print('run', command, '(', self.job_name, ')')
-                if not dry:
-                    subprocess.run(command, shell=True)  # debug
-            else:
-                command = 'qsub ' + job_file  # TODO: slurm (sbatch)
-                print('run', command, '(', self.job_name, ')')
-                if not dry:
-                    subprocess.run(command, shell=True)  # debug
-
-        return self
-
-    @deprecated
-    def closest_replica(self, x):  # TODO: rewrite!!!
-        # TODO: offer option to search for a replica that is closest to a given plane
-        'Find the replica which is closest to x in order parameters space.'
-        assert self.propagated
-        dist = np.linalg.norm(self.colvars - x[np.newaxis, :], axis=1)
-        i = np.argmin(dist)
-        return int(i), dist[i]
-
-    @property
-    def colvar_root(self):
-        return '{root}/observables/{branch}_{iteration:03d}/'.format(root=root(), branch=self.branch, iteration=self.iteration)
-
-    def colvars(self, subdir='colvars', fields=All, memoize=True):
-        'Return Colvars object for the set of collective variables saved in a given subdir and limited to given fields'
-        if (subdir, tuple(fields)) in self._colvars:
-            return self._colvars[(subdir, tuple(fields))]
-        else:
-            folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
-                   root=root(), branch=self.branch, iteration=self.iteration)
-            base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-                   branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
-            pcoords = Colvars(folder=folder + subdir, base=base, fields=fields)
-            if memoize:
-                self._colvars[(subdir, tuple(fields))] = pcoords
-            return pcoords
-
-    def overlap_plane(self, other, subdir='colvars', fields=All, indicator='max'):
-        'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
-        return self.colvars(subdir=subdir, fields=fields).overlap_plane(other.colvars(subdir=subdir, fields=fields),
-                                                                        indicator=indicator)
-
-    def x0(self, subdir='colvars', fields=All):  # TODO: have this as a Colvars object?
-        'Get the initial position for the simualtion in colvar space.'
-        if subdir not in self._x0:
-            branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
-            folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
-                   root=root(), branch=branch, iteration=int(iteration))
-            base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-                   branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
-            self._x0[subdir] = Colvars(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
-        return self._x0[subdir]
-
-    @deprecated
-    def bar_RMSD(self, other, T=303.15):
-        import pyemma
-        RT = 1.985877534E-3 * T  # kcal/mol
-        id_self = '%03d_%03d' % (self.id_major, self.id_minor)
-        id_other = '%03d_%03d' % (other.id_major, other.id_minor)
-        p_self = self.colvars(subdir='RMSD')
-        p_other = other.colvars(subdir='RMSD')
-        btrajs = [np.zeros((len(p_self), 2)), np.zeros((len(p_other), 2))]
-        btrajs[0][:, 0] = p_self[id_self][:]**2 * 5.0 / RT
-        btrajs[0][:, 1] = p_self[id_other][:]**2 * 5.0 / RT
-        btrajs[1][:, 0] = p_other[id_self][:]**2 * 5.0 / RT
-        btrajs[1][:, 1] = p_other[id_other][:]**2 * 5.0 / RT
-        ttrajs = [np.zeros(len(p_self), dtype=int), np.ones(len(p_other), dtype=int)]
-        mbar = pyemma.thermo.MBAR()
-        mbar.estimate((ttrajs, ttrajs, btrajs))
-        return mbar.f_therm[0] - mbar.f_therm[1]
-
-    @staticmethod
-    def potential(x, node, spring):
-        'Compute the bias potential parametrized by node and spring evaluated along the possibly multidimensional order parameter x.'
-        u = np.zeros(x._colvars.shape[0])
-        for name in node.dtype.names:
-            #print('x', x[name].shape)
-            #print('spring', spring[name].shape)
-            #print('node', node[name].shape)
-            #u_part = 0.5 * spring[name] * np.linalg.norm(x[name] - node[name], axis=1)**2
-            #print(x[name].shape, node[name].shape, (x[name] - node[name]).shape)
-            u_part = 0.5 * float(spring[name]) * np.sum((x[name] - node[name])**2, axis=1)
-            #print(u_part.shape)
-            assert u_part.ndim == 1
-            #print('pot', u_part.shape, u_part.ndim)
-            #if u is None:
-            #    u = u_part
-            #else:
-            u += u_part
-        return u
-    
-    def bar(self, other, subdir='colvars', T=303.15):
-        'Compute thermodynamic free energy difference between this window (self) and other using BAR.'
-        import pyemma
-        from pyemma.util.contexts import settings
-        RT = 1.985877534E-3 * T  # kcal/mol
-        fields = list(self.node.dtype.names)
-        my_x = self.colvars(subdir=subdir, fields=fields)
-        other_x = other.colvars(subdir=subdir, fields=fields)
-        btrajs = [np.zeros((len(my_x), 2)), np.zeros((len(other_x), 2))]
-        btrajs[0][:, 0] = Image.potential(my_x, self.node, self.spring) / RT
-        btrajs[0][:, 1] = Image.potential(my_x, other.node, other.spring) / RT
-        btrajs[1][:, 0] = Image.potential(other_x, self.node, self.spring) / RT
-        btrajs[1][:, 1] = Image.potential(other_x, other.node, other.spring) / RT
-        ttrajs = [np.zeros(len(my_x), dtype=int), np.ones(len(other_x), dtype=int)]
-        mbar = pyemma.thermo.MBAR(maxiter=100000)
-        with settings(show_progress_bars=False):
-            mbar.estimate((ttrajs, ttrajs, btrajs))
-            df = mbar.f_therm[0] - mbar.f_therm[1]
-            # error computation
-            N_1 = btrajs[0].shape[0]
-            N_2 = btrajs[1].shape[0]
-            u = np.concatenate((btrajs[0], btrajs[1]), axis=0)
-            du = u[:, 1] - u[:, 0]
-            b = (1.0 / (2.0 + 2.0 * np.cosh(df - du - np.log(1.0 * N_1 / N_2)))).sum()  # TODO: check if we are using df with the correct sign!
-            delta_df = 1 / b - (N_1 + N_2) / (N_1 * N_2)
-
-        return df, delta_df, mbar
-
-    # TODO: have some version that provides the relative signs (of the scalar product) of neighbors
-    def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
-        'Compute the difference between the windows\'s mean and its initial position in order parameter space'
-        if origin == 'x0':
-            o = self.x0(subdir=subdir, fields=fields)
-        elif origin == 'node' or origin == 'center':
-            if isinstance(fields, AllType):
-                o = self.node
-            else:
-                o = self.node[fields]
-        else:
-            raise ValueError('origin must be either "node" or "x0"')
-        mean = self.colvars(subdir=subdir, fields=fields).mean
-        if norm=='rmsd':
-            n_atoms = len(o.dtype.names)
-        else:
-            n_atoms = 1
-        if norm != 'rmsd':
-            ord = norm
-        else:
-            ord = None
-        return np.linalg.norm(structured_to_flat(mean).reshape(-1) - structured_to_flat(o, fields=list(mean.dtype.names)).reshape(-1), ord=ord) * (n_atoms ** -0.5)
-
-
-def load_jobs_PBS():
-    from subprocess import Popen, PIPE
-    import xml.etree.ElementTree as ET
-    process = Popen(['qstat', '-x',], stdout=PIPE, stderr=PIPE)
-    stdout, stderr = process.communicate()
-    jobs = []
-    root = ET.fromstring(stdout)
-    for node in root:
-       job = {}
-       for pair in node:
-           if pair.tag in ['Job_Name', 'Job_Owner', 'job_state']:
-               job[pair.tag] = pair.text
-       jobs.append(job)
-    return jobs
-
-
-def get_queued_jobs_PBS():
-    import getpass
-    user = getpass.getuser()
-    names = []
-    for job in load_jobs_PBS():
-        if job['Job_Owner'][0:len(user)] == user:
-            names.append(job['Job_Name'])
-    return names
-
-
-def get_queued_jobs_SLURM():
-    from subprocess import Popen, PIPE    
-    import getpass
-    user = getpass.getuser()
-    process = Popen(['squeue', '-o', '%j', '-h', '-u', user], stdout=PIPE, stderr=PIPE)
-    stdout, stderr = process.communicate()    
-    return [j.strip() for j in stdout]
-
-
-def get_queued_jobs():
-    try:
-        return get_queued_jobs_SLURM()
-    except FileNotFoundError:
-        try:
-            return get_queued_jobs_PBS()
-        except FileNotFoundError:
-            return None  #_All
-
-
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
-
-# TODO: move to separate module
-def interpolate_id(s, z, excluded):
-    'Create new simulation ID between s and z, preferentially leaving low digits zero.'
-    excluded_int = []
-    for id_ in excluded:
-        _, _, a, b = id_.split('_')
-        excluded_int.append(int(a + b))
-
-    branch, iter_, a, b = s.split('_')
-    _, _, c, d = z.split('_')
-    x = a + b
-    y = c + d
-    upper = max(int(x), int(y))
-    lower = min(int(x), int(y))
-    # print('searching', upper, lower)
-    result = between(0, 6, upper=upper, lower=lower, excluded=excluded_int)
-    # print('searching', upper, lower)
-    if not result:
-        raise RuntimeError('Could not generate an unique id.')
-    return '%s_%03s_%03d_%03d' % (branch, iter_, result // 1000, result % 1000)
-
-
-def interval_overlap(a, b, c, d):
-    assert a <= b and c <= d
-    if b < c or a > d:
-        return 0
-    else:
-        return min(b, d) - max(a, c)
-
-# TODO: move to separate module
-def between(a, e, upper, lower, excluded):
-    integers = np.array([0, 5, 4, 6, 3, 7, 2, 8, 9, 1])
-
-    if e < 0:
-        return False
-    for i in integers:
-        x = a + 10 ** e * i
-        if lower < x < upper and x not in excluded:
-            # print('success', x)
-            return x
-
-    # compute overlap with possible trial intervals, then try the ones with large overlap first
-    sizes = [interval_overlap(lower, upper, a + 10 ** e * i, a + 10 ** e * (i + 1)) for i in integers]
-    for i in integers[np.argsort(sizes)[::-1]]:
-        l = a + 10 ** e * i
-        r = a + 10 ** e * (i + 1)
-        if lower < r and upper > l:
-            # print('recursing', l, r, e, i)
-            result = between(l, e - 1, upper, lower, excluded)
-            if result:
-                return result
-    # print('not found')
-    return False
 
 
 class Group(object):
     'Group of images, that typically belong to the same replica exchange simulation'
 
     def __init__(self, group_id, string, images=None):
+        import weakref
         self.group_id = group_id
         if images is None:
             self.images = dict()
@@ -864,21 +150,14 @@ class Group(object):
         return counts
 
 
-def pairing(i, j, ordered=True):
-    return (i + j) * (i + j + 1) // 2 + i
-    #if not tri:
-    #    return (i + j) * (i + j + 1) // 2 + i
-    #else:  # TODO: think about more compact pairing
-    #    return i*(i + 1)//2 + j  # TODO: correct for the ordering of states
-
-
 class String(object):
-    def __init__(self, branch, iteration, images, image_distance, previous, opaque):
+    def __init__(self, branch, iteration, images, image_distance, previous, colvars_def, opaque):
         self.branch = branch
         self.iteration = iteration
         self.images = images
         self.image_distance = image_distance
         self.previous = previous
+        self.colvars_def = colvars_def
         self.opaque = opaque
         self.groups = dict()
         # create and populate groups, if group_ids were found in the config
@@ -890,11 +169,12 @@ class String(object):
 
     def __str__(self):
         str_images = '{' + ', '.join(['%g:%s'%(seq, im) for seq, im in self.images.items()]) + '}'
-        return 'String(branch=\'%s\', iteration=%d, images=%s, image_distance=%f, previous=%s, opaque=%s)' % (
-            self.branch, self.iteration, str_images, self.image_distance, self.previous, self.opaque)
+        return 'String(branch=\'%s\', iteration=%d, images=%s, image_distance=%f, previous=%s, colvars_def=%s, opaque=%s)' % (
+            self.branch, self.iteration, str_images, self.image_distance, self.previous, self.colvars_def, self.opaque)
 
     def discretize(self, points, states_per_arc=100):
         # TODO first check compatibility with path (fields)
+        from .util import pairing
         arcs = [self]  # currently we only support one arc, TODO: change this
         sz = np.array([b.project(points, return_z=True) for b in arcs])
         best = np.argmin(sz[:, 1])  # find the closest arc for each input point
@@ -910,8 +190,8 @@ class String(object):
             previous = self.previous
         if images is None:
             images = dict()
-        return String(branch=self.branch, iteration=iteration, images=images,
-                      image_distance=self.image_distance, previous=previous, opaque=self.opaque)
+        return String(branch=self.branch, iteration=iteration, images=images, image_distance=self.image_distance,
+                      previous=previous, colvars_def=self.colvars_def, opaque=self.opaque)
 
     def add_image(self, image):
         'Add new image to string'
@@ -928,19 +208,6 @@ class String(object):
     def images_ordered(self):
         'Images ordered by ID, where id_major.id_minor is interpreted as a floating point number'
         return [self.images[key] for key in sorted(self.images.keys())]
-
-    @classmethod
-    def from_scratch(cls, image_distance=1.0, branch='AZ', iteration_id=1):
-        'Initialized a String from a folder of *.nc files.'
-        n_images = len(glob.glob(root() + '/strings/AZ_000/*.dcd'))
-        raise NotImplementedError('implementation currently broken')
-        # TODO sort files and set endpoint properly!
-        images = dict()
-        for i in range(n_images):
-            # endpoint = (i==0 or i==n_images - 1)
-            images[i] = \
-                 Image(image_id=i, previous_image_id=i, previous_frame_number=0, node=None, endpoint=False)
-        return String(branch=branch, iteration=iteration_id, images=images, image_distance=image_distance, previous=None)
 
     def _launch_simulation(self, image, random_number, wait, queued_jobs, run_locally, dry):
         return image.propagate(random_number=random_number, wait=wait,
@@ -1049,7 +316,7 @@ class String(object):
                 best_image = q
                 best_step = query_q['i']
         elif search == 'string':
-            # TODO: move code to .find()
+            # TODO: move code to .find() ?
             responses = []
             for im in self.images.values():
                 try:
@@ -1063,30 +330,17 @@ class String(object):
         else:
             raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
-
         new_image_id = interpolate_id(p.image_id, q.image_id, excluded=[im.image_id for im in self.images.values()])
         if any(new_image_id == im.image_id for im in self.images.values()):
             raise RuntimeError('Bisection produced new image id which is not unique. This should not happen.')
 
-        new_image = Image(image_id=new_image_id, previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                          node=x, spring=p.spring.copy(), endpoint=False, atoms_1=best_image.atoms_1, group_id=None)
+        new_image = best_image.__class__(image_id=new_image_id, previous_image_id=best_image.image_id,
+                                         previous_frame_number=best_step, node=x, spring=p.spring.copy(), group_id=None)
+        # TODO: for linear bias, where to put the terminal (just the next node along the string)
+        # TODO: or should we use some interpolation to control the distance between node and termimal?
 
         #   self.images[new_image.seq] = new_image
         return new_image
-
-    def bisect(self, ids):
-
-        raise NotImplementedError('This is broken')
-        subdir = 'colvars'
-        ov_max, idx = self.overlap(subdir=subdir, indicator='max', return_ids=True)
-        gaps = np.array(idx)[ov_max < 0.10]
-        new_imgs = []
-        new_string = self.empty_copy(images=string.images)  # keep current images, just add to them
-        for gap in gaps:
-            new_img = string.bisect_at(i=gap[0], j=gap[1], subdir=subdir, where='node')
-            new_imgs.append(new_img)
-            new_string.images[new_img.seq] = new_img
-        return new_string  # new_string.write_yaml()
 
     def bisect_and_propagate_util_connected(self, run_locally=False):
         s = self
@@ -1149,6 +403,7 @@ class String(object):
         string['branch'] = self.branch
         string['iteration'] = self.iteration
         string['image_distance'] = self.image_distance
+        string['colvars'] = self.colvars_def
         config = {}
         config.update(self.opaque)
         config['strings'] = [string]
@@ -1190,7 +445,8 @@ class String(object):
 
         # do the string reparametrization
         ordered_means = reorder_nodes(nodes=current_means)
-        nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5)
+        nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
+                                            d_skip=self.image_distance * n_atoms**0.5 / 2)
 
         # do self-consistency tests (check distances)
         eps = 1E-6
@@ -1207,6 +463,7 @@ class String(object):
 
         iteration = self.iteration + 1
         new_string = self.empty_copy(iteration=iteration, previous=self)
+        image_class = self.images_ordered[0].__class__
 
         for i_node, x in enumerate(nodes):
             # we have to convert the unrealized nodes to realized frames
@@ -1221,47 +478,53 @@ class String(object):
             best_image = responses[best_idx][0]
             best_step = responses[best_idx][1]['i']
 
-            new_image = Image(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
-                              previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                              node=node, spring=best_image.spring.copy(), endpoint=False, atoms_1=None,
-                              group_id=None)
+            new_image = image_class(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
+                                    previous_image_id=best_image.image_id, previous_frame_number=best_step,
+                                    node=node, terminal=None, spring=best_image.spring.copy(), group_id=None)
 
             new_string.images[new_image.seq] = new_image
 
             if linear_bias:
                 for a, b in zip(new_string.images_ordered[0:-1], new_string.images_ordered[1:]):
-                    a.end = b.node.copy()
+                    a.set_terminal_point(b.node)
 
         return new_string
 
-    @deprecated
-    def find(self, x):
-        'Find the Image and a replica that is closest to point x in order parameter space.'
-        # return image, replica_id (in that image)
-        images =  [image for image in self.images.values() if not image.endpoint]
-        results = [image.closest_replica(x) for image in images]
-        best = int(np.argmin([r[1] for r in results]))
-        return images[best], results[best][0], results[best][1]
+    #@deprecated
+    #def find(self, x):
+    #    'Find the Image and a replica that is closest to point x in order parameter space.'
+    #    # return image, replica_id (in that image)
+    #    images =  [image for image in self.images.values() if not image.endpoint]
+    #    results = [image.closest_replica(x) for image in images]
+    #    best = int(np.argmin([r[1] for r in results]))
+    #    return images[best], results[best][0], results[best][1]
 
     @classmethod
     def load(cls, branch='AZ', iteration=0):
-        'Created a String object by recovering the information form the yaml file in the folder that is given as the argument.'
-        folder = '%s/strings/%s_%03d' % (root(), branch, iteration)
-        with open(folder + '/plan.yaml') as f:
-            config = yaml.load(f)
-        string = config['strings'][0]
-        branch = string['branch']
-        iteration = string['iteration']
-        if int(string['iteration']) != iteration:
+        'Create a String object by recovering from the yaml file corresponding to the given branch and interation number (in the current project directory tree).'
+        fname = '%s/strings/%s_%03d/plan.yaml' % (root(), branch, iteration)
+        string = cls.load_form_fname(fname)
+        if int(string.iteration) != iteration:
             raise RuntimeError(
                 'Plan file is inconsitent: iteration recorded in the file is %s but the iteration encoded in the folder name is %d.' % (
-                    string['iteration'], iteration))
+                    string.iteration, iteration))
+        return string
+
+    @classmethod
+    def load_form_fname(cls, fname):
+        'Create a String object by recovering the information form the yaml file whose path is given as the argument.'
+        with open(fname) as f:
+            config = yaml.load(f)
+        string = config['strings'][0]
+        colvars_def = string['colvars'] if 'colvars' in string else None
+        branch = string['branch']
+        iteration = string['iteration']
         image_distance = string['image_distance']
-        images_arr = [Image.load(config=img_cfg) for img_cfg in string['images']]
+        images_arr = [load_image(config=img_cfg, colvars_def=colvars_def) for img_cfg in string['images']]
         images = {image.seq: image for image in images_arr}
-        opaque = {key: config[key] for key in config.keys() if key != 'strings'}
+        opaque = {key: config[key] for key in config.keys() if key not in ['strings']}  # TODO: currently opaque refers to things outside of the string, also handle information inside
         return String(branch=branch, iteration=iteration, images=images, image_distance=image_distance, previous=None,
-                      opaque=opaque)
+                      opaque=opaque, colvars_def=colvars_def)
 
     @property
     def previous_string(self):
@@ -1271,7 +534,7 @@ class String(object):
                 print('loading -1')
                 self.previous = String.load(branch=self.branch, iteration=self.iteration - 1)
             else:
-                print('loading *')  # TODO: this seems currently broken
+                print('loading *')  # TODO: this is currently broken and will not work like this
                 self.previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
         return self.previous
 
@@ -1344,7 +607,7 @@ class String(object):
         :   Grisell Díaz Leines and Bernd Ensing. Path finding on high-dimensional free energy landscapes.
             Phys. Rev. Lett., 109:020601, 2012
         '''
-        fields = list(self.images_ordered[0].node.dtype.names)
+        fields = self.images_ordered[0].fields
         support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
         # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
         x = []
@@ -1354,7 +617,7 @@ class String(object):
         support_points = np.array(x)
 
         results = []
-        for image in self.images_ordered:  # TODO: return as dictionary instead
+        for image in self.images_ordered:  # TODO: return as dictionary instead?
             try:
                 if x0:
                     x = image.x0(subdir=subdir, fields=fields)
@@ -1382,7 +645,7 @@ class String(object):
                 #print(node_proj)
                 mean_proj = Colvars.arclength_projection(mean.as2D(fields=fields), support_points, order=2)[0]
                 #print(type(mean_proj), type(node_proj), image.spring[fields[0]][0])
-                forces.append((node_proj - mean_proj)*image.spring[fields[0]][0])  # TODO: implement the general anisotropic case
+                forces.append((node_proj - mean_proj)*image.spring[fields[0]][0])  # TODO: implement the general anisotropic case (TODO: move part to the Image classes)
             except FileNotFoundError as e:
                 forces.append(0.)
                 warnings.warn(str(e))
@@ -1442,7 +705,7 @@ class String(object):
 
         return mbar
 
-    def mbar_RMSD(self, T=303.15, subdir='rmsd'):
+    def mbar_RMSD(self, T=303.15, subdir='rmsd'):  # TODO: move some of this into the Image classes
         'For RMSD-type bias: Estimate all free energies using MBAR'
         import pyemma.thermo
 
@@ -1503,74 +766,74 @@ class String(object):
 
         return mbar, xaxis
 
-    @deprecated
-    def mbar_RMSD_old(self, T=303.15, subdir='rmsd'):
-        'For RMSD-type bias: Estimate all free energies using MBAR'
-        # TODO: also implement the simpler case with a "simple" (possibly multidimensional) order parameter
-        # TODO: implement some way to provide mbar with am order parameter that is binned (discretized) -> dtrajs
-        # e.g. # discretize='com_distance' (how to select the number of bins?)
-        import collections
-        import pyemma.thermo
-
-        RT = 1.985877534E-3 * T  # kcal/mol
-
-        # Convention for ensemble IDs: sarangi does not use any explict ensemble IDs.
-        # Ensembles are simply defined by the bias parameters and are not given any canonical label.
-        # This is the same procedure as in Pyemma (Ch. Wehmeyer's harmonic US API).
-        # For data exchange, biases are simply labeled with the ID of a simulations that uses the bias.
-        # This is e.g. used in precomputed bias energies / precomputed spring extensions.
-        # Data exchange labels are not unique (there can't be any unique label that's not arbitrary).
-        # So we have to go back to the actual bias definitions and map them to their possible IDs.
-        parameters_to_names = collections.defaultdict(list)  # which bias IDs point to the same bias?
-        for im in self.images.values():  # TODO: have a full universal convention for defining biases (e.g. type + params)
-            bias_def = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1), im.spring[0][0])  # convert back from numpy?
-            parameters_to_names[bias_def].append(im.image_id)
-        # TODO: what if the defintions span multiple string iterations or multiple branches?
-        K = len(parameters_to_names)  # number of (unique) ensembles
-        print('number of unique biases is', K)
-        # generate running indices for all the different biases; generate map from bias IDs to running indices
-        names_to_indices = {}  # index = running index
-        names_to_spring_constants = {}  # index = running index
-        for i, (bias_def, names) in enumerate(parameters_to_names.items()):
-            for name in names:
-                names_to_indices[name] = i
-                names_to_spring_constants[name] = bias_def[-1]
-
-        btrajs = []
-        ttrajs = []
-        for im in self.images.values():
-            # print('loading', im.image_id)
-            x = im.colvars(subdir=subdir, memoize=False)
-            # print('done loading')
-            btraj = np.zeros((len(x), K)) + np.nan  # shape??
-            biases_defined = set()
-
-            for name in x._pcoords.dtype.names:
-                if name in names_to_indices:
-                    # loop over all indices
-                    btraj[:, names_to_indices[name]] = 0.5 * names_to_spring_constants[name] * x[name] ** 2 / RT
-                    biases_defined.add(names_to_indices[name])
-                else:
-                    warnings.warn('Trajectory %s contains unused observable %s.' % (im.image_id, name))
-            if len(biases_defined) > K:
-                raise ValueError('Image %s has too many biases' % im.image_id)
-            if len(biases_defined) < K:
-                raise ValueError('Image %s is missing some biases' % im.image_id)
-            assert not np.any(np.isnan(btraj))
-            btrajs.append(btraj)
-            ttrajs.append(np.zeros(len(x), dtype=int) + names_to_indices[im.image_id])
-
-        print('running MBAR')
-        mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
-        mbar.estimate((ttrajs, ttrajs, btrajs))
-
-        # prepare "xaxis" to use for plots
-        xaxis = [-1] * len(names_to_indices)
-        for id_, number in names_to_indices.items():
-            _, _, major, minor = id_.split('_')
-            xaxis[number] = float(major + '.' + minor)
-
-        return mbar, xaxis
+    # @deprecated
+    # def mbar_RMSD_old(self, T=303.15, subdir='rmsd'):
+    #     'For RMSD-type bias: Estimate all free energies using MBAR'
+    #     # TODO: also implement the simpler case with a "simple" (possibly multidimensional) order parameter
+    #     # TODO: implement some way to provide mbar with am order parameter that is binned (discretized) -> dtrajs
+    #     # e.g. # discretize='com_distance' (how to select the number of bins?)
+    #     import collections
+    #     import pyemma.thermo
+    #
+    #     RT = 1.985877534E-3 * T  # kcal/mol
+    #
+    #     # Convention for ensemble IDs: sarangi does not use any explict ensemble IDs.
+    #     # Ensembles are simply defined by the bias parameters and are not given any canonical label.
+    #     # This is the same procedure as in Pyemma (Ch. Wehmeyer's harmonic US API).
+    #     # For data exchange, biases are simply labeled with the ID of a simulations that uses the bias.
+    #     # This is e.g. used in precomputed bias energies / precomputed spring extensions.
+    #     # Data exchange labels are not unique (there can't be any unique label that's not arbitrary).
+    #     # So we have to go back to the actual bias definitions and map them to their possible IDs.
+    #     parameters_to_names = collections.defaultdict(list)  # which bias IDs point to the same bias?
+    #     for im in self.images.values():  # TODO: have a full universal convention for defining biases (e.g. type + params)
+    #         bias_def = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1), im.spring[0][0])  # convert back from numpy?
+    #         parameters_to_names[bias_def].append(im.image_id)
+    #     # TODO: what if the defintions span multiple string iterations or multiple branches?
+    #     K = len(parameters_to_names)  # number of (unique) ensembles
+    #     print('number of unique biases is', K)
+    #     # generate running indices for all the different biases; generate map from bias IDs to running indices
+    #     names_to_indices = {}  # index = running index
+    #     names_to_spring_constants = {}  # index = running index
+    #     for i, (bias_def, names) in enumerate(parameters_to_names.items()):
+    #         for name in names:
+    #             names_to_indices[name] = i
+    #             names_to_spring_constants[name] = bias_def[-1]
+    #
+    #     btrajs = []
+    #     ttrajs = []
+    #     for im in self.images.values():
+    #         # print('loading', im.image_id)
+    #         x = im.colvars(subdir=subdir, memoize=False)
+    #         # print('done loading')
+    #         btraj = np.zeros((len(x), K)) + np.nan  # shape??
+    #         biases_defined = set()
+    #
+    #         for name in x._pcoords.dtype.names:
+    #             if name in names_to_indices:
+    #                 # loop over all indices
+    #                 btraj[:, names_to_indices[name]] = 0.5 * names_to_spring_constants[name] * x[name] ** 2 / RT
+    #                 biases_defined.add(names_to_indices[name])
+    #             else:
+    #                 warnings.warn('Trajectory %s contains unused observable %s.' % (im.image_id, name))
+    #         if len(biases_defined) > K:
+    #             raise ValueError('Image %s has too many biases' % im.image_id)
+    #         if len(biases_defined) < K:
+    #             raise ValueError('Image %s is missing some biases' % im.image_id)
+    #         assert not np.any(np.isnan(btraj))
+    #         btrajs.append(btraj)
+    #         ttrajs.append(np.zeros(len(x), dtype=int) + names_to_indices[im.image_id])
+    #
+    #     print('running MBAR')
+    #     mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
+    #     mbar.estimate((ttrajs, ttrajs, btrajs))
+    #
+    #     # prepare "xaxis" to use for plots
+    #     xaxis = [-1] * len(names_to_indices)
+    #     for id_, number in names_to_indices.items():
+    #         _, _, major, minor = id_.split('_')
+    #         xaxis[number] = float(major + '.' + minor)
+    #
+    #     return mbar, xaxis
 
     @staticmethod
     def overlap_gaps(matrix, threshold=0.99):
@@ -1662,8 +925,8 @@ def parse_commandline(argv=None):
     return options
 
 
-def init(image_distance=1.0, argv=None):
-    String.from_scratch(image_distance=image_distance).write_yaml()
+#def init(image_distance=1.0, argv=None):
+#    String.from_scratch(image_distance=image_distance).write_yaml()
 
 
 def load(branch='AZ', offset=0):
@@ -1677,7 +940,7 @@ def load(branch='AZ', offset=0):
             if folder_branch == branch and folder_iteration.isdigit():
                 iteration = max([iteration, int(folder_iteration)])
     print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + offset))
-    return String.load(branch=branch, iteration = iteration + offset)
+    return String.load(branch=branch, iteration=iteration + offset)
 
 
 def main(argv=None):

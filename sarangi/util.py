@@ -5,7 +5,35 @@ import os
 
 
 __all__ =['find', 'mkdir', 'load_structured', 'dump_structured', 'structured_to_flat', 'flat_to_structured',
-          'recarray_average', 'recarray_difference', 'recarray_norm', 'AllType', 'All']
+          'recarray_average', 'recarray_difference', 'recarray_vdot', 'recarray_norm', 'AllType', 'All', 'root',
+          'is_sim_id']
+
+
+def root():
+    'Return absolute path to the root directory of the project.'
+    if 'STRING_SIM_ROOT' in os.environ:
+        return os.environ['STRING_SIM_ROOT']
+    else:
+        folder = os.path.realpath('.')
+        while not os.path.exists(os.path.join(folder, '.sarangirc')) and folder != '/':
+            # print('looking at', folder)
+            folder = os.path.realpath(os.path.join(folder, '..'))
+        if os.path.exists(os.path.join(folder, '.sarangirc')):
+            return folder
+        else:
+            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and'
+                               ' no .sarangirc file was found.')
+
+
+def is_sim_id(s):
+    fields = s.split('_')
+    if len(fields) != 4:
+        return False
+    if not fields[0][0].isalpha():
+        return False
+    if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
+        return False
+    return True
 
 
 def find(items, keys):
@@ -21,6 +49,13 @@ def mkdir(folder):
     except OSError as e:
         if e.errno != errno.EEXIST:
             raise
+
+
+def length_along_segment(a, b, x, clamp=True):
+    s = 1. - np.vdot(x - b, a - b) / np.vdot(a - b, a - b)  # x = a => 0; x = b => 1
+    if clamp:
+        s = min(max(s, 0.), 1.)
+    return s
 
 
 def load_structured(config):
@@ -115,6 +150,15 @@ def recarray_difference(a, b):
     return c
 
 
+def recarray_vdot(a, b):
+    if a.dtype.names != b.dtype.names:
+        raise ValueError('a and b must have the same fields')
+    s = 0.0
+    for name in a.dtype.names:
+        s += np.vdot(a[name], b[name])
+    return s
+
+
 def recarray_norm(a, rmsd=True):
     s = 0.0
     for name in a.dtype.names:
@@ -135,3 +179,45 @@ class AllType(object):
 
 
 All = AllType()
+
+
+def pairing(i, j, ordered=True):
+    return (i + j) * (i + j + 1) // 2 + i
+    #if not tri:
+    #    return (i + j) * (i + j + 1) // 2 + i
+    #else:  # TODO: think about more compact pairing
+    #    return i*(i + 1)//2 + j  # TODO: correct for the ordering of states
+
+
+def nodes_to_trajs(string, fname='nodes.pdb', fields=All):
+    pdb_fmt = '{ATOM:<6}{serial_number:>5} {atom_name:<4}{alt_loc_indicator:<1}{res_name:<3} ' \
+              '{chain_id:<1}{res_seq_number:>4}{insert_code:<1}   {x:8.3f}{y:8.3f}{z:8.3f}{occupancy:6.2f}{temp_factor:6.2f}'
+
+    frames = []
+    for i_node, image in enumerate(string.images_ordered):
+        frame = 'MODEL      {model:>3}\n'.format(model=i_node)
+        node = image.node
+        for i, field in enumerate(node.dtype.names):
+            if field in fields:
+                frame += (pdb_fmt.format(
+                        ATOM='ATOM',
+                        serial_number=i,
+                        atom_name='C',
+                        alt_loc_indicator=' ',
+                        res_name=field[0:3],
+                        chain_id='A',
+                        res_seq_number=i,
+                        insert_code=' ',
+                        x=node[field][0, 0],
+                        y=node[field][0, 1],
+                        z=node[field][0, 2],
+                        occupancy=1.0,
+                        temp_factor=0.0) + '\n')
+        frame += 'ENDMDL\n'
+        frames.append(frame)
+
+    with open(fname, 'w') as f:
+        for frame in frames:
+            f.write(frame)
+
+    return frames

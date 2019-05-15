@@ -79,7 +79,7 @@ def find_intersecting_segment(nodes, o, d, i_edge0, s0, direction=-1):
     return -1, None, 0.
 
 
-def compute_equidistant_nodes_2(old_nodes, d, direction=-1):
+def compute_equidistant_nodes_2(old_nodes, d, direction=-1, d_skip=None):
     nodes = np.array(old_nodes)
     if nodes.ndim != 2:
         raise ValueError('old_nodes must be 2-D')
@@ -91,6 +91,12 @@ def compute_equidistant_nodes_2(old_nodes, d, direction=-1):
         res.append(point)
         i_edge0, point, s0 = find_intersecting_segment(nodes, point, d, i_edge0, s0, direction)
         # print(i_edge0)
+    if d_skip is not None and np.linalg.norm(res[-1] - nodes[-1, :]) < d_skip:
+        res.pop()
+        percentage = 100 * np.linalg.norm(res[-1], nodes[-1, :]) / d
+        warnings.warn('During reparametrization, the last interpolated image is closer than %f to the fixed end of the '
+                      'string. Did not add that interpolating image. This leads to a image distance at the end of the '
+                      'string that is %d%% larger than normal.'%(d_skip, percentage))
     return np.concatenate((res, [nodes[-1, :]]))
 
 
