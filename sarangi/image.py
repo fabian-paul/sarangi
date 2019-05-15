@@ -180,6 +180,7 @@ class Image(object):
             root=root(), branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
 
     def _make_env(self, random_number):
+        # this will typically be run on the headnode or some other dedicated node on the compute cluster
         env = dict()
         root_ = root()
         # TODO: clean up this list a little, since the job script has access to the plan file/string object anyway
@@ -194,7 +195,7 @@ class Image(object):
         env['STRING_RANDOM'] = str(random_number)
         env['STRING_PREV_ARCHIVE'] = self.previous_base
         env['STRING_ARCHIVE'] = self.base
-        env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/string_archive.py'
+        env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/../scripts/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
         env['STRING_BASE'] = '{root}/strings/{branch}_{iteration:03d}'.format(root=root_,
                                                                               branch=self.branch,
