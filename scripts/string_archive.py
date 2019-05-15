@@ -119,7 +119,7 @@ def write_colvar(colvars_file, string, image):
     with open(colvars_template) as f:
         config = ''.join(f.readlines()) + '\n'
 
-    config += image.write_namd_conf(cwd=os.getcwd())
+    config += image.namd_conf(cwd='./')
 
     with open(colvars_file, 'w') as f:
         f.write(config)

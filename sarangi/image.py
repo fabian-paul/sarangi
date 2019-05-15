@@ -98,7 +98,7 @@ class Image(object):
 
     @property
     def bias_is_isotropic(self):
-        return self.terminal is not None
+        return self.terminal is None
 
     def namd_conf(self, cwd):
         if self.bias_is_isotropic:
