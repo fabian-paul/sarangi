@@ -40,14 +40,17 @@ def main_transform(transform_and_save, cvname='colvars'):
         transform_and_save(fname_traj=fname_traj, fname_base_out=fname_base_out, sim_id=sim_id)
 
 
-def main_update(image_id=None, ignore_colvar_traj=False):
+def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
     import os
     sim_root = root()
     if image_id is not None:
         branch, iteration, _, _ = image_id.split('_')
         string = String.load(branch=branch, iteration=int(iteration))
     else:
-        string = load()  # load highest iteration of the string
+        if iteration is None:
+            string = load()  # load highest iteration of the string
+        else:
+            string = String.load(branch='AZ', iteration=iteration)
 
     observables = string.opaque['observables']
 
