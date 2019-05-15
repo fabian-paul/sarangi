@@ -63,6 +63,14 @@ class Group(object):
                                                                                               iteration=self.string.iteration)
         return env
 
+    def __getitem__(self, key):
+        if isinstance(key, float) or isinstance(key, int):
+            return self.images[float(key)]
+        elif isinstance(key, str):
+            return next(im for im in self.images if im.image_id == key)
+        else:
+            raise ValueError('key is neither a number nor a string, don\'t know what to do with it.')
+
     @property
     def job_name(self):
         'Job name under which the simulation is known to the queuing system'
@@ -171,6 +179,14 @@ class String(object):
         str_images = '{' + ', '.join(['%g:%s'%(seq, im) for seq, im in self.images.items()]) + '}'
         return 'String(branch=\'%s\', iteration=%d, images=%s, image_distance=%f, previous=%s, colvars_def=%s, opaque=%s)' % (
             self.branch, self.iteration, str_images, self.image_distance, self.previous, self.colvars_def, self.opaque)
+
+    def __getitem__(self, key):
+        if isinstance(key, float) or isinstance(key, int):
+            return self.images[float(key)]
+        elif isinstance(key, str):
+            return next(im for im in self.images if im.image_id == key)
+        else:
+            raise ValueError('key is neither a number nor a string, don\'t know what to do with it.')
 
     def discretize(self, points, states_per_arc=100):
         # TODO first check compatibility with path (fields)

@@ -217,7 +217,7 @@ if __name__ == '__main__':
         sim_id = os.path.expandvars(args.id)
         top = os.path.expandvars(args.top)
         string = sarangi.String.load_form_fname(fname=os.path.expandvars(args.plan))
-        image = string.images[sim_id]
+        image = string[sim_id]
         extract(image=image, fname_dest_coor=args.coordinates, fname_dest_box=args.box, top=top, number=int(args.frame))
 
         write_colvar(image=image, string=string, colvars_file=args.colvars)
@@ -241,7 +241,7 @@ if __name__ == '__main__':
         group_id = os.path.expandvars(args.id)
         string = sarangi.String.load_form_fname(fname=os.path.expandvars(args.plan))
         for i, image in enumerate(string.group[group_id].images_ordered):
-            print('replica-store: out.%d.sort.dcd -> %s' % (i, image['id']))
+            print('replica-store: out.%d.sort.dcd -> %s' % (i, image.image_id))
             store(fname_trajectory='out.%d.sort.dcd' % i, fname_colvars_traj='out.%d.sort.colvars.traj' % i, sim_id=image.image_id)
             # TODO: reorder by Hamiltonian (dcd and colvars.traj) ?
             # TODO: store more data, like the history of biases? ?
