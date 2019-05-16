@@ -751,7 +751,7 @@ def compound_string_to_Cartesian_string(string, atom_selection, new_branch=None,
         fields = ['%s_%s%d' % (a.name, a.residue.name[0:3], a.residue.resSeq) for a in frame.top.atoms]
         atomnumbers_pdb = [a.serial for a in frame.top.atoms]
         dtype = np.dtype([(name, np.float64, 3) for name in fields])
-        positions = frame.xyz[0, :, :]
+        positions = frame.xyz[0, :, :] * 10.  # convert to Angstrom
         node = np.core.records.fromarrays(positions[:, np.newaxis, :], dtype=dtype)
         new_image = CartesianImage(
             image_id='%s_%03d_%03d_%03d' % (new_branch, new_iteration, im.id_major, im.id_minor),
