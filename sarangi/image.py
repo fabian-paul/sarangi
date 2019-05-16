@@ -424,7 +424,7 @@ class CompoundImage(Image):
         if not super(CompoundImage, self).__eq__(other):
             return False
         for key in ['node', 'spring', 'terminal', 'orthogonal_spring']:
-            if self.__dict__[key] != other.__dict__[key]:
+            if not np.array_equal(self.__dict__[key], other.__dict__[key]):
                 return False
         return True
 
@@ -549,7 +549,7 @@ class CartesianImage(Image):
             orthogonal_spring = None
 
         image = cls(node=node, terminal=terminal, spring=spring, orthogonal_spring=orthogonal_spring,
-                    colvars_def=colvars_def, opaque=opaque, **super(CompoundImage)._load_params(config))
+                    colvars_def=colvars_def, opaque=opaque, **super(CartesianImage, cls)._load_params(config))
         return image
 
     def dump(self):
@@ -571,15 +571,19 @@ class CartesianImage(Image):
         if not super(CartesianImage, self).__eq__(other):
             return False
         for key in ['node', 'spring', 'terminal', 'orthogonal_spring']:
-            if self.__dict__[key] != other.__dict__[key]:
+            if not np.array_equal(self.__dict__[key], other.__dict__[key]):
                 return False
         return True
 
     @property
     def topology_file(self):
-        return root() + '/setup/system.pdb'
+        if self.colvars_def is not None and 'topology_file' in self.colvars_def:
+            return self.colvars_def['topology_file']
+        else:  # return default
+            return root() + '/setup/system.pdb'
 
     def triples(self, terminal=False):
+        'Generates Cartesian triples for atom restraints to be used with NAMD colvars. Triples are ordered by PDB atom ID.'
         atom_id_by_field = self._read_atom_id_by_field(fname_pdb=self.topology_file)
         fields_ordered = sorted(atom_id_by_field.keys(), key=lambda field: atom_id_by_field[field])
 
@@ -589,10 +593,11 @@ class CartesianImage(Image):
             x = self.node
         res = []
         for field in fields_ordered:
-            res.append('(' + ' , '.join([str(x) for x in x[field]]) + ')')
+            res.append('(' + ' , '.join([str(x) for x in x[field][0]]) + ')')
         return ' '.join(res)
 
-    def _read_atom_id_by_field(self, fname_pdb):
+    def _read_atom_id_by_field(self, fname_pdb, translate_histidines=True):
+        'Convert atoms codes in self.fields (=self.node.dtype.names) to PDB indices as they are used the main PDB file.'
         atom_id_by_field = {}
         with open(fname_pdb) as f:  # or use rather use mdtraj reader?
             lines = f.readlines()
@@ -600,10 +605,13 @@ class CartesianImage(Image):
             if line[:4] == 'ATOM' or line[:6] == 'HETATM':
                 atom_id = int(line[6:11])
                 atom_name = line[12:16].strip()
-                res_name = line[17:21].strip()
+                res_name = line[17:20].strip()
+                if translate_histidines and res_name in ['HSD', 'HSE', 'HSP']:
+                    res_name = 'HIS'
                 res_id = int(line[22:26])
-                field = '%s%d_%s' % (res_name, res_id, atom_name)  # TODO: add chain ID?
-                atom_id_by_field[field] = atom_id
+                atom_code = '%s_%s%d' % (atom_name, res_name, res_id)  # TODO: add chain ID?
+                if atom_code in self.fields:
+                    atom_id_by_field[atom_code] = atom_id
         for field in self.fields:
             if field not in atom_id_by_field:
                 raise RuntimeError('Atom/residue combination "%s" was not found in master pdb file "%s".'%(field,
@@ -611,10 +619,12 @@ class CartesianImage(Image):
         return atom_id_by_field
 
     def atom_numbers(self):
+        'Return PBD atom IDs for all atoms to be restained. Result is ordered increasingly, following the same convention as .triples()'
         atom_id_by_field = self._read_atom_id_by_field(fname_pdb=self.topology_file)
         return sorted(atom_id_by_field.values())
 
     def _isotropic_namd_conf(self, cwd, as_pdb=False):
+        import textwrap
         # if as_pdb:
         #     c = '''
         #     colvar {{
@@ -644,14 +654,14 @@ class CartesianImage(Image):
         #     raise NotImplementedError('not finished...')
         #     # return c
         # else:
-        c = '''
+        c = textwrap.dedent('''
         colvar {{
             name RMSD
             rmsd {{
                 atoms {{
                     atomnumbers {{ {atoms} }}
                 }}
-                refPositions {triples_node}
+                refPositions {{ {triples_node} }}
             }}
         }}
 
@@ -661,17 +671,19 @@ class CartesianImage(Image):
             forceconstant {spring}
             centers       0.0
         }}
-        '''.format(atoms=self.atom_numbers(), triples_node=self.triples(terminal=False), spring=self.spring)
+        '''.format(atoms=' '.join(str(i) for i in self.atom_numbers()), triples_node=self.triples(terminal=False),
+                   spring=self.spring))
         return c
 
     def _linear_namd_conf(self, cwd, as_pdb=False):
-        c = '''
+        import textwrap
+        c = textwrap.dedent('''
         colvar {{
           name tangent
           eigenvector {{
             atoms {{ atomnumbers {{ {atoms} }} }}
-            refPositions {triples_node}
-            vector {triples_terminal}
+            refPositions {{ {triples_node} }}
+            vector {{ {triples_terminal} }}
             differenceVector on
           }}
         }}
@@ -680,8 +692,8 @@ class CartesianImage(Image):
             rmsd {{
                 atoms {{ atomnumbers {{ {atoms} }} }}
             }}
-        }}'''.format(atoms=self.atom_numbers(), triples_node=self.triples(terminal=False),
-                     triples_terminal=self.triples(terminal=True))
+        }}'''.format(atoms=' '.join(str(i) for i in self.atom_numbers()), triples_node=self.triples(terminal=False),
+                     triples_terminal=self.triples(terminal=True)))
         return c
 
     #@deprecated
@@ -705,10 +717,37 @@ class CartesianImage(Image):
 
 def load_image(config, colvars_def):
     # if 'pdb' in node
-    if 'bias' in config and config['bias'] == 'cartesian':
+    if 'bias' in config and config['bias'] == 'Cartesian':
         return CartesianImage.load(config=config, colvars_def=colvars_def)
     else:  # default to CompoundImage
         return CompoundImage.load(config=config, colvars_def=colvars_def)
+
+
+def compound_string_to_Cartesian_string(string, atom_selection, new_branch=None, new_iteration=None, spring=10.,
+                                        colvars_template='$STRING_SIM_ROOT/setup/colvars_Cartesian.template'):
+    'Convert string of CompoundImages to string of CartesianImages. Use atom MDTraj selection string to select atoms.'
+    import mdtraj
+    if new_iteration is None:
+        new_iteration = string.iteration + 1
+    if new_branch is None:
+        new_branch = string.branch
+    s_new = string.empty_copy(new_branch=new_branch, iteration=new_iteration)
+    for im in string.images_ordered:
+        pdb = mdtraj.load(im.colvar_root + 'mean_pdb/' + im.image_id + '.pdb')
+        frame = pdb.atom_slice(atom_indices=pdb.top.select(atom_selection))
+        fields = ['%s_%s%d' % (a.name, a.residue.name, a.residue.resSeq) for a in frame.top.atoms]
+        atomnumbers_pdb = [a.serial for a in frame.top.atoms]
+        dtype = np.dtype([(name, np.float64, 3) for name in fields])
+        positions = frame.xyz[0, :, :]
+        node = np.core.records.fromarrays(positions[:, np.newaxis, :], dtype=dtype)
+        new_image = CartesianImage(
+            image_id='%s_%03d_%03d_%03d' % (new_branch, new_iteration, im.id_major, im.id_minor),
+            previous_image_id=im.previous_image_id,
+            previous_frame_number=im.previous_frame_number, node=node, spring=spring)
+        s_new.add_image(new_image)
+    s_new.colvars_def = {'Cartesian': {'atomnumbers': atomnumbers_pdb, 'names': fields }}
+    s_new.colvars_def['template_file'] = colvars_template
+    return s_new
 
 # colvars:
 #

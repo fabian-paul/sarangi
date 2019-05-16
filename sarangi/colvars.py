@@ -166,8 +166,6 @@ class Colvars(object):
 
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
-        #if self.endpoint or other.endpoint:
-        #    return 0
         half_log_det_s1 = np.sum(np.log(np.diag(np.linalg.cholesky(self.cov))))
         half_log_det_s2 = np.sum(np.log(np.diag(np.linalg.cholesky(other.cov))))
         s = 0.5*(self.cov + other.cov)
@@ -185,8 +183,6 @@ class Colvars(object):
         results_s = []
         results_z = []
         ## TODO: this is kind of a hack, replace by the correct soltution later
-        #if order in [1, 2]:
-        #    delta =
         for x in points:
             i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
             if order == 0:
@@ -228,7 +224,7 @@ class Colvars(object):
                     v2v2 = np.vdot(v2, v2)
                     # TODO: test these expressions
                     f = ((v1v3**2 - v3v3*(v1v1 - v2v2))**0.5 - v1v3) / v3v3  # minus is the correct sign here!
-                    s = (f - 1.)*0.5
+                    s = (f - 1.)*0.5  # TODO: minus correct here?
                     results_s.append(i + di*s)
                     if return_z:
                         results_z.append(np.linalg.norm(x - f*v3 + mid))  # TODO: test

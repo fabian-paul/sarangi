@@ -20,7 +20,7 @@ from .queuing import *
 
 
 __all__ = ['String', 'root', 'load', 'main']
-__author__ = 'Fabian Paul <fab@physik.tu-berlin.de>'
+__author__ = 'Fabian Paul <fapa@uchicago.edu>'
 
 
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
@@ -393,25 +393,32 @@ class String(object):
         return '{root}/strings/{branch}_{iteration:03d}'.format(root=root(), branch=self.branch, iteration=self.iteration)
 
     def check_against_string_on_disk(self):
-        'Compare currently loaded string to the version on disk. Check that read-only elements were not modified'
+        'Compare currently loaded string to the version on disk. Check that read-only elements were not modified.'
         try:
             on_disk = String.load(branch=self.branch, iteration=self.iteration)
         except FileNotFoundError:
             # plan file does not exist, we therefore assume that this is a new string (or new iteration)
             return True
-        # image values written to disk are not allowed to be changed in memory
-        for key, image in on_disk.images.items():
-            if self.images[key] != image:
+        # image values written to disk are not allowed to be changed in memory (once a sim_id is assigned, never change record)
+        for on_disk_key, on_disk_image in on_disk.images.items():
+            if on_disk_key not in self.images:
+                warnings.warn('Some images that have already been written to disk to the same plan have been deleted '
+                              'in RAM. Unless you know exactly what you are doing, the current string cannot be saved.')
+                return False
+            if self.images[on_disk_key] != on_disk_image:
                 warnings.warn('Images that have already been written to disk have changed in RAM. '
                               'Unless you know exactly what you are doing, the current string cannot be saved.')
                 return False
         return True
 
-    def write_yaml(self, backup=True, message=None, _override=False):  # TODO: rename to save_status
+    def write_yaml(self, backup=True, message=None, _override=False):
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/strings/<branch>_<iteration>'
         import shutil
         if not self.check_against_string_on_disk() and not _override:
-            raise RuntimeError('Not saved.')
+            raise RuntimeError(
+                'There is already a plan with the same name on disk that has different images from the one you are '
+                'trying to save. Stopping the operation, new string was not saved! You can override, if you are sure '
+                'what you are doing.')
         string = {}
         for key, image in self.images.items():
             assert key==image.seq
