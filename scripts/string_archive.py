@@ -98,8 +98,8 @@ def write_image_coordinates(image, fname_dest_pdb, top_fname):
                       'reference. Skipping this step.')
         return
     frame = load_initial_coordinates(image, top_fname)
-    atoms = image.colvars_def['cartesian']['atomnumbers']
-    b_factors = [1 if (i + 1) in atoms else 0 for i in range(frame.top.n_atoms)]
+    atoms = image.colvars_def['Cartesian']['atomnumbers']
+    b_factors = [1 if a.serial in atoms else 0 for a in frame.top.atoms]
     frame.save_pdb(fname_dest_pdb, bfactors=b_factors)
 
 
