@@ -636,41 +636,14 @@ class CartesianImage(Image):
 
     def _isotropic_namd_conf(self, cwd, as_pdb=False):
         import textwrap
-        # if as_pdb:
-        #     c = '''
-        #     colvar {{
-        #         name RMSD
-        #         rmsd {{
-        #             atoms {{
-        #                 atomsFile image.pdb
-        #                 atomsCol B
-        #                 atomsColValue 1.0
-        #                 centerReference off
-        #                 rotateReference off
-        #             }}
-        #             refPositionsFile image.pdb
-        #             refPositionsCol B
-        #             refPositionsColValue 1.0
-        #         }}
-        #     }}
-        #
-        #     harmonic {{
-        #         name          RMSD
-        #         colvars       RMSD
-        #         forceconstant {spring}
-        #         centers       0.0
-        #     }}
-        #     '''.format(spring=self.spring)
-        #     self.as_pdb(cwd + 'image.pdb')
-        #     raise NotImplementedError('not finished...')
-        #     # return c
-        # else:
         c = textwrap.dedent('''
         colvar {{
             name RMSD
             rmsd {{
                 atoms {{
                     atomnumbers {{ {atoms} }}
+                    centerReference off
+                    rotateReference off
                 }}
                 refPositions {{ {triples_node} }}
             }}
@@ -692,7 +665,11 @@ class CartesianImage(Image):
         colvar {{
           name tangent
           eigenvector {{
-            atoms {{ atomnumbers {{ {atoms} }} }}
+            atoms {{
+                atomnumbers {{ {atoms} }}
+                centerReference off
+                rotateReference off
+            }}
             refPositions {{ {triples_node} }}
             vector {{ {triples_terminal} }}
             differenceVector on
@@ -725,6 +702,37 @@ class CartesianImage(Image):
     #    mbar.estimate((ttrajs, ttrajs, btrajs))
     #    return mbar.f_therm[0] - mbar.f_therm[1]
 
+    #class CartesianPDBImage(Image):
+        #def _isotropic_namd_conf(self, cwd, as_pdb=False):
+        #     import textwrap
+        #     c = textwrap.dedent('''
+        #     colvar {{
+        #         name RMSD
+        #         rmsd {{
+        #             atoms {{
+        #                 atomsFile image.pdb
+        #                 atomsCol B
+        #                 atomsColValue 1.0
+        #                 centerReference off
+        #                 rotateReference off
+        #             }}
+        #             refPositionsFile image.pdb
+        #             refPositionsCol B
+        #             refPositionsColValue 1.0
+        #         }}
+        #     }}
+        #
+        #     harmonic {{
+        #         name          RMSD
+        #         colvars       RMSD
+        #         forceconstant {spring}
+        #         centers       0.0
+        #     }}
+        #     '''.format(spring=self.spring)
+        #     self.as_pdb(cwd + 'image.pdb')
+        #     raise NotImplementedError('not finished...')
+        #     # return c
+        # else:
 
 def load_image(config, colvars_def):
     # if 'pdb' in node
