@@ -596,22 +596,33 @@ class CartesianImage(Image):
             res.append('(' + ' , '.join([str(x) for x in x[field][0]]) + ')')
         return ' '.join(res)
 
-    def _read_atom_id_by_field(self, fname_pdb, translate_histidines=True):
+    def _read_atom_id_by_field(self, fname_pdb, translate_histidines=True, use_mdtraj=True):
         'Convert atoms codes in self.fields (=self.node.dtype.names) to PDB indices as they are used the main PDB file.'
         atom_id_by_field = {}
-        with open(fname_pdb) as f:  # or use rather use mdtraj reader?
-            lines = f.readlines()
-        for line in lines:
-            if line[:4] == 'ATOM' or line[:6] == 'HETATM':
-                atom_id = int(line[6:11])
-                atom_name = line[12:16].strip()
-                res_name = line[17:20].strip()
+        if use_mdtraj:
+            import mdtraj
+            top = mdtraj.load(fname_pdb).top
+            for a in top.atoms:
+                res_name = a.residue.name[0:3]  # only use three places for resname, of this is done consitently -> less confusion
                 if translate_histidines and res_name in ['HSD', 'HSE', 'HSP']:
                     res_name = 'HIS'
-                res_id = int(line[22:26])
-                atom_code = '%s_%s%d' % (atom_name, res_name, res_id)  # TODO: add chain ID?
+                atom_code = '%s_%s%d' % (a.name, res_name, a.residue.resSeq)
                 if atom_code in self.fields:
-                    atom_id_by_field[atom_code] = atom_id
+                    atom_id_by_field[atom_code] = a.serial
+        else:
+            with open(fname_pdb) as f:  # or use rather use mdtraj reader?
+                lines = f.readlines()
+            for line in lines:
+                if line[:4] == 'ATOM' or line[:6] == 'HETATM':
+                    atom_id = int(line[6:11])
+                    atom_name = line[12:16].strip()
+                    res_name = line[17:20].strip()
+                    if translate_histidines and res_name in ['HSD', 'HSE', 'HSP']:
+                        res_name = 'HIS'
+                    res_id = int(line[22:26])
+                    atom_code = '%s_%s%d' % (atom_name, res_name, res_id)  # TODO: add chain ID?
+                    if atom_code in self.fields:
+                        atom_id_by_field[atom_code] = atom_id
         for field in self.fields:
             if field not in atom_id_by_field:
                 raise RuntimeError('Atom/residue combination "%s" was not found in master pdb file "%s".'%(field,
@@ -735,7 +746,9 @@ def compound_string_to_Cartesian_string(string, atom_selection, new_branch=None,
     for im in string.images_ordered:
         pdb = mdtraj.load(im.colvar_root + 'mean_pdb/' + im.image_id + '.pdb')
         frame = pdb.atom_slice(atom_indices=pdb.top.select(atom_selection))
-        fields = ['%s_%s%d' % (a.name, a.residue.name, a.residue.resSeq) for a in frame.top.atoms]
+        # we only use three characters for the resname; since we try to be consistent, this is more safe than
+        # supporting 3 and 4 characters at the same time and working around the intricacies of different libraries
+        fields = ['%s_%s%d' % (a.name, a.residue.name[0:3], a.residue.resSeq) for a in frame.top.atoms]
         atomnumbers_pdb = [a.serial for a in frame.top.atoms]
         dtype = np.dtype([(name, np.float64, 3) for name in fields])
         positions = frame.xyz[0, :, :]
