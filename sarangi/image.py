@@ -684,6 +684,33 @@ class CartesianImage(Image):
                      triples_terminal=self.triples(terminal=True)))
         return c
 
+    def traj_to_observables(self, subdir='colvars', make=True):
+        '''Extract Cartesian positions of colvars form MD trajectory and save as npy in colvar directory.
+
+           Parameters
+           ----------
+           make: boolean, default=True
+               Skip operation if npy file already exists and is newer (according to mtime) than the trajectory.
+        '''
+        import mdtraj
+        npy_fname = '{root}/observables/{branch}_{iteration:03d}/{subdir}/{id}.npy'.format(
+            root=root(), branch=self.branch, iteration=self.iteration, subdir=subdir, id=self.image_id)
+        traj_fname = self.base + '.dcd'
+
+        # the following assume that "observables" to not change
+        if make and os.path.exists(npy_fname) and os.path.getmtime(npy_fname) > os.path.getmtime(traj_fname):
+            # skip
+            return
+
+        atom_id_by_field = self._read_atom_id_by_field(fname_pdb=self.topology_file)
+        # now order by atom id
+        fields_ordered = sorted(atom_id_by_field.keys(), key=lambda field: atom_id_by_field[field])
+        atom_indices = sorted(atom_id_by_field.values())
+        traj = mdtraj.load(traj_fname, top=self.topology_file, atom_indices=atom_indices)
+        dtype = np.dtype([(name, np.float64, 3) for name in fields_ordered])
+        to_save = np.core.records.fromarrays(np.transpose(traj.xyz, axes=(1, 0, 2)), dtype=dtype)
+        np.save(npy_fname,  to_save)
+
     #@deprecated
     #def bar_RMSD(self, other, T=303.15):
     #    import pyemma
@@ -742,15 +769,13 @@ def load_image(config, colvars_def):
         return CompoundImage.load(config=config, colvars_def=colvars_def)
 
 
-def compound_string_to_Cartesian_string(string, atom_selection, new_branch=None, new_iteration=None, spring=10.,
+def compound_string_to_Cartesian_string(string, atom_selection, new_iteration=None, spring=10.,
                                         colvars_template='$STRING_SIM_ROOT/setup/colvars_Cartesian.template'):
     'Convert string of CompoundImages to string of CartesianImages. Use atom MDTraj selection string to select atoms.'
     import mdtraj
     if new_iteration is None:
         new_iteration = string.iteration + 1
-    if new_branch is None:
-        new_branch = string.branch
-    s_new = string.empty_copy(new_branch=new_branch, iteration=new_iteration)
+    s_new = string.empty_copy(iteration=new_iteration)
     for im in string.images_ordered:
         pdb = mdtraj.load(im.colvar_root + 'mean_pdb/' + im.image_id + '.pdb')
         frame = pdb.atom_slice(atom_indices=pdb.top.select(atom_selection))
@@ -762,7 +787,7 @@ def compound_string_to_Cartesian_string(string, atom_selection, new_branch=None,
         positions = frame.xyz[0, :, :] * 10.  # convert to Angstrom
         node = np.core.records.fromarrays(positions[:, np.newaxis, :], dtype=dtype)
         new_image = CartesianImage(
-            image_id='%s_%03d_%03d_%03d' % (new_branch, new_iteration, im.id_major, im.id_minor),
+            image_id='%s_%03d_%03d_%03d' % (string.branch, new_iteration, im.id_major, im.id_minor),
             previous_image_id=im.previous_image_id,
             previous_frame_number=im.previous_frame_number, node=node, spring=spring)
         s_new.add_image(new_image)
