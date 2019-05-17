@@ -707,7 +707,7 @@ class CartesianImage(Image):
         fields_ordered = sorted(atom_id_by_field.keys(), key=lambda field: atom_id_by_field[field])
         atom_indices = sorted(atom_id_by_field.values())
         traj = mdtraj.load(traj_fname, top=self.topology_file, atom_indices=atom_indices)
-        dtype = np.dtype([(name, np.float64, 3) for name in fields_ordered])
+        dtype = np.dtype([(name, np.float32, 3) for name in fields_ordered])
         to_save = np.core.records.fromarrays(np.transpose(traj.xyz, axes=(1, 0, 2)), dtype=dtype)
         np.save(npy_fname,  to_save)
 
