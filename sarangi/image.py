@@ -278,24 +278,22 @@ class Image(object):
             self._x0[subdir] = Colvars(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
         return self._x0[subdir]
 
-    @staticmethod
-    def potential(x, node, spring):
+    def potential(self, colvars, factor=1.0, out=None):
         'Compute the bias potential parametrized by node and spring evaluated along the possibly multidimensional order parameter x.'
-        u = np.zeros(x._colvars.shape[0])
-        for name in node.dtype.names:
-            # print('x', x[name].shape)
-            # print('spring', spring[name].shape)
-            # print('node', node[name].shape)
-            # u_part = 0.5 * spring[name] * np.linalg.norm(x[name] - node[name], axis=1)**2
-            # print(x[name].shape, node[name].shape, (x[name] - node[name]).shape)
-            u_part = 0.5 * float(spring[name]) * np.sum((x[name] - node[name]) ** 2, axis=1)
-            # print(u_part.shape)
-            assert u_part.ndim == 1
-            # print('pot', u_part.shape, u_part.ndim)
-            # if u is None:
-            #    u = u_part
-            # else:
-            u += u_part
+        if out is None:
+            u = np.zeros(len(colvars))
+        else:
+            u = out
+        if not self.bias_is_isotropic:
+            raise NotImplementedError('Bias computation not implemented for anisotropic biases.')
+        node = self.node
+        spring = self.spring
+        for name in self.node.dtype.names:
+            if isinstance(spring, float):
+                k = spring
+            else:
+                k = float(spring[name])
+            u[:] += 0.5 * factor * k * np.sum((colvars._colvars[name] - node[name]) ** 2, axis=1)
         return u
 
     def bar(self, other, subdir='colvars', T=303.15):
@@ -307,11 +305,13 @@ class Image(object):
         my_x = self.colvars(subdir=subdir, fields=fields)
         other_x = other.colvars(subdir=subdir, fields=fields)
         btrajs = [np.zeros((len(my_x), 2)), np.zeros((len(other_x), 2))]
-        btrajs[0][:, 0] = Image.potential(my_x, self.node, self.spring) / RT
-        btrajs[0][:, 1] = Image.potential(my_x, other.node, other.spring) / RT
-        btrajs[1][:, 0] = Image.potential(other_x, self.node, self.spring) / RT
-        btrajs[1][:, 1] = Image.potential(other_x, other.node, other.spring) / RT
+        self.potential(colvars=my_x, factor=1./RT, out=btrajs[0][:, 0])
+        other.potential(colvars=my_x, factor=1./RT, out=btrajs[0][:, 1])
+        self.potential(colvars=other_x, factor=1./RT, out=btrajs[1][:, 0])
+        other.potential(colvars=other_x, factor=1./RT, out=btrajs[1][:, 1])
         ttrajs = [np.zeros(len(my_x), dtype=int), np.ones(len(other_x), dtype=int)]
+
+        # TODO: use some discretization (TODO; implement discretization)
         mbar = pyemma.thermo.MBAR(maxiter=100000)
         with settings(show_progress_bars=False):
             mbar.estimate((ttrajs, ttrajs, btrajs))
@@ -356,6 +356,12 @@ class Image(object):
         if sorted(point.dtype.names) != sorted(self.node.dtype.names):
             raise ValueError('point does not match field signature')
         self.terminal = point.copy()
+        if self.spring is not None and not isinstance(self.spring, float):
+            warnings.warn('Setting terminal point but spring is still parametrizing an  "elliptic" bias. '
+                          'If spring is not changed this won\'t run.')
+
+    def discretize(self):
+        raise NotImplementedError('Not yet implemented.')
 
 
 class CompoundImage(Image):
@@ -453,6 +459,7 @@ class CompoundImage(Image):
         return config
 
     def _linear_namd_conf(self, cwd):
+        import textwrap
         if self.colvars_def is None or 'compound' not in self.colvars_def:
             raise RuntimeError('MD setup with linear order parameter (linearly directed bias) was requested but, plan file '
                                'does not contain definitions of the collective variables. Can\'t create MD setup file.')
@@ -462,37 +469,44 @@ class CompoundImage(Image):
         a_minus_b = recarray_difference(a, b)
         norm = np.linalg.norm(structured_to_flat(a_minus_b))
         const = recarray_vdot(a, a_minus_b) / norm
-        expr = ['%f'%const]
+        expr = ['%f' % const]
         # see equation in appendix to the paper
         for field in a_minus_b.dtype.names:
-            for i in range(3):  # TODO: find the correct dimension from numpy array
-                expr.append('{field}{dim}*{factor}'.format(field=field, dim=i+1, factor=-a_minus_b[i]/norm))
-
-        config += '''config {{
-                       name tangent
-                       customFunction {{{expression}}}
-                  '''.format(expression='+'.join(expr))
+            dim = a_minus_b[field].shape[1]
+            assert a_minus_b[field].shape[0] == 1
+            for i in range(dim):
+                expr.append(
+                    '{field}{dim}*{factor}'.format(field=field, dim=i + 1, factor=-a_minus_b[field][0][i] / norm))
+        config += textwrap.dedent('''
+                    colvar {{
+                      name tangent
+                      customFunction {{{expression}}}
+                    '''.format(expression='+'.join(expr)))
         # now repeat all colvar definitions but with the name moved inside (see colvar documentation)
         for colvar in self.colvars_def['compound']:
             # name is inside in contrast to the "normal" colvar definition
             if 'type' in colvar and colvar['type'] != 'com':
                 warnings.warn('Found colvars def of type %s, don\'t know how to handle.')
-            config += '''distanceVec {{
-                           name {field}
-                           group2 {{ atomnumbers {{ {atoms} }} }}
-                           group1 {{ dummyAtom ( 0.0 , 0.0 , 0.0 ) }}
-                         }
-                         '''.format(field=colvar['name'], atoms=' '.join(colvar['atomnumbers']))
+            config += textwrap.dedent('''
+                        distanceVec {{
+                          name {field}
+                          group2 {{ atomnumbers {{ {atoms} }} }}
+                          group1 {{ dummyAtom ( 0.0 , 0.0 , 0.0 ) }}
+                        }}
+                        '''.format(field=colvar['name'], atoms=' '.join([str(i) for i in colvar['atomnumbers']])))
+        config += '}\n'
         # add harmonic force
         if not isinstance(self.spring, float):
             raise ValueError('Field spring is of type %s, expecting float. Don\'t know how to handle this for applying'
                              'a unidirectional force.' % (type(self.spring)))
-        config += '''harmonic {{
-                       name tanget_restraint
-                       colvars tangent
-                       forceconstant {spring}
-                       centers 0.0 }}
-                       '''.format(spring=self.spring)
+        config += textwrap.dedent('''
+                    harmonic {{
+                      name tanget_restraint
+                      colvars tangent
+                      forceconstant {spring}
+                      centers 0.0
+                    }}
+                    '''.format(spring=self.spring))
         return config
 
     # TODO: add method for writing replica groups
@@ -690,7 +704,8 @@ class CartesianImage(Image):
            Parameters
            ----------
            make: boolean, default=True
-               Skip operation if npy file already exists and is newer (according to mtime) than the trajectory.
+               Skip operation if npy file already exists and is newer (according to mtime) than the trajectory,
+               much like the GNU "make" utility.
         '''
         import mdtraj
         npy_fname = '{root}/observables/{branch}_{iteration:03d}/{subdir}/{id}.npy'.format(
