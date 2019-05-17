@@ -105,7 +105,8 @@ def structured_to_flat(recarray, fields=None):
     if recarray.dtype.names is None:
         # conventional ndarray
         if fields is not None and not isinstance(fields, AllType):
-            warnings.warn('User requested fields in a particular order %s, but input is already flat. Continuing and hoping for the best.' % str(fields))
+            warnings.warn('User requested fields in a particular order %s, but input is already flat. '
+                          'Continuing and hoping for the best.' % str(fields))
         n = recarray.shape[0]
         return recarray.reshape((n, -1))
     else:
@@ -133,7 +134,7 @@ def flat_to_structured(array, fields, dims):
 
 
 def recarray_average(a, b):
-    if a.dtype.names != b.dtype.names:
+    if not all(n in b.dtype.names for n in a.dtype.names) and all(n in b.dtype.names for n in a.dtype.names):
         raise ValueError('a and b must have the same fields')
     c = np.zeros_like(a)
     for name in a.dtype.names:
@@ -142,7 +143,7 @@ def recarray_average(a, b):
 
 
 def recarray_difference(a, b):
-    if a.dtype.names != b.dtype.names:
+    if not all(n in b.dtype.names for n in a.dtype.names) and all(n in b.dtype.names for n in a.dtype.names):
         raise ValueError('a and b must have the same fields')
     c = np.zeros_like(a)
     for name in a.dtype.names:
@@ -151,7 +152,7 @@ def recarray_difference(a, b):
 
 
 def recarray_vdot(a, b):
-    if a.dtype.names != b.dtype.names:
+    if not all(n in b.dtype.names for n in a.dtype.names) and all(n in b.dtype.names for n in a.dtype.names):
         raise ValueError('a and b must have the same fields')
     s = 0.0
     for name in a.dtype.names:
@@ -159,7 +160,7 @@ def recarray_vdot(a, b):
     return s
 
 
-def recarray_norm(a, rmsd=True):
+def recarray_norm(a, rmsd=False):
     s = 0.0
     for name in a.dtype.names:
         s += np.sum(a[name]**2)
