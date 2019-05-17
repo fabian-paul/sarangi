@@ -699,7 +699,7 @@ class CartesianImage(Image):
 
         # the following assume that "observables" to not change
         if make and os.path.exists(npy_fname) and os.path.getmtime(npy_fname) > os.path.getmtime(traj_fname):
-            # skip
+            warnings.warn('Skipping image %s because colvar file is already up to date.'%(self.image_id))
             return
 
         atom_id_by_field = self._read_atom_id_by_field(fname_pdb=self.topology_file)
@@ -708,7 +708,7 @@ class CartesianImage(Image):
         atom_indices = sorted(atom_id_by_field.values())
         traj = mdtraj.load(traj_fname, top=self.topology_file, atom_indices=atom_indices)
         dtype = np.dtype([(name, np.float32, 3) for name in fields_ordered])
-        to_save = np.core.records.fromarrays(np.transpose(traj.xyz, axes=(1, 0, 2)), dtype=dtype)
+        to_save = np.core.records.fromarrays(np.transpose(traj.xyz*10., axes=(1, 0, 2)), dtype=dtype)  # nm -> Angstrom
         np.save(npy_fname,  to_save)
 
     #@deprecated
