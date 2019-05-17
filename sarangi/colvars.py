@@ -117,6 +117,10 @@ class Colvars(object):
         'Convert to plain 2-D numpy array where the first dimension is time'
         return structured_to_flat(self._colvars, fields=fields)
 
+    def as3D(self, fiels):
+        'For set of Cartesian coordinates, convert to (n_time_steps, n_atoms, 3) ndarray.'
+        raise NotImplementedError()
+
     @property
     def mean(self):
         self._compute_moments()
@@ -255,7 +259,7 @@ class Colvars(object):
     @property
     def fields(self):
         'Variable names (from colvars.traj header or npy file)'
-        return self._colvars.dtype.names
+        return list(self._colvars.dtype.names)
 
     @property
     def dims(self):

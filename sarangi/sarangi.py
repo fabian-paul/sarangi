@@ -444,7 +444,7 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def reparametrize(self, subdir='colvars', fields=All, rmsd=True, linear_bias=False):
+    def reparametrize(self, subdir='colvars', fields=All, rmsd=True, linear_bias=0):
         'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String.'
 
         # collect all means, in the same time check that all the coordinate dimensions and
@@ -509,9 +509,22 @@ class String(object):
 
             new_string.images[new_image.seq] = new_image
 
-            if linear_bias:
-                for a, b in zip(new_string.images_ordered[0:-1], new_string.images_ordered[1:]):
-                    a.set_terminal_point(b.node)
+            # only for tangential biases (no isotropic or elliptic bias)
+            if linear_bias > 0:
+                if linear_bias == 1:
+                    for a, b in zip(new_string.images_ordered[0:-1], new_string.images_ordered[1:]):
+                        a.set_terminal_point(b.node)
+                elif linear_bias == 2:  # order 2 interpolation
+                    # a  ----- b ----- c ---- ....
+                    # |\_______ _______/
+                    # |        |
+                    # node     +> terminal
+                    imo = new_string.images_ordered
+                    for a, c in zip(imo[0:-2], imo[2:]):
+                        a.set_terminal_point(recarray_average(a.node, c.node))
+                    imo[-2].set_terminal_point(imo[-1].node)
+                else:
+                    raise NotImplementedError('Higher-order interpolation schemes (beyond 2) are not implemented yet.')
 
         return new_string
 
@@ -676,26 +689,34 @@ class String(object):
         ----
         Forces are always projected on the string.
         '''
-        # RT = 1.985877534E-3 * T  # kcal/mol
+        # RT = * T  # kcal/mol
         forces = []
         fields = list(self.images_ordered[0].node.dtype.names)
         support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
         for image in self.images_ordered:
             for f in fields:
-                if image.spring[f] != image.spring[fields[0]]:
-                    raise NotImplementedError('PMF computation currently only implemented for isotropic forces')
+                if isinstance(image.spring, np.ndarray) and image.spring[f] != image.spring[fields[0]]:
+                    raise NotImplementedError('PMF computation currently only implemented for non-elliptic forces')
             try:
-                mean = image.colvars(subdir=subdir, fields=fields)
-                node_proj = Colvars.arclength_projection(structured_to_flat(image.node, fields=fields), support_points, order=2)[0]
-                #print(node_proj)
-                mean_proj = Colvars.arclength_projection(mean.as2D(fields=fields), support_points, order=2)[0]
-                #print(type(mean_proj), type(node_proj), image.spring[fields[0]][0])
-                forces.append((node_proj - mean_proj)*image.spring[fields[0]][0])  # TODO: implement the general anisotropic case (TODO: move part to the Image classes)
+                if image.bias_is_isotropic:
+                    mean = image.colvars(subdir=subdir, fields=fields)
+                    node_proj = Colvars.arclength_projection(structured_to_flat(image.node, fields=fields), support_points, order=1)[0]
+                    #print(node_proj)
+                    mean_proj = Colvars.arclength_projection(mean.as2D(fields=fields), support_points, order=1)[0]
+                    #print(type(mean_proj), type(node_proj), image.spring[fields[0]][0])
+                    forces.append((node_proj - mean_proj)*image.spring[fields[0]][0])  # TODO: implement the general anisotropic case (TODO: move part to the Image classes)
+                else:
+                    raise NotImplementedError('Tangential force calculation not yet implemented.')
+                    #forces.append(image.tangential_displacement*image.spring)
             except FileNotFoundError as e:
                 forces.append(0.)
-                warnings.warn(str(e))
+                warnings.warn(str(e) + ' Replacing the missing mean force value by a value of zero.')
         if integrate:
-            return np.cumsum(np.array(forces) * self.image_distance)
+            distances = np.zeros(len(self.images_ordered) - 2)
+            for i, (a, b) in enumerate(zip(self.images_ordered[0:-2], self.images_ordered[2:])):
+                delta = recarray_difference(a.node, b.node)
+                distances[i] = 0.5 * recarray_vdot(delta, delta)**0.5
+            return np.cumsum(np.array(forces)[1:-1] * np.array(distances))
         else:
             return forces
 
@@ -941,6 +962,24 @@ class String(object):
                 im.group_id = new_group_id
                 group.add_image(im)
         self.groups[new_group_id] = group
+
+    def kinkiness(self):
+        'Return scalar products between successive tangents to the string. If terminal points of images are set, use them.'
+        from .util import recarray_difference, recarray_vdot
+        scalar_products = []
+        for a, b, c in zip(self.images_ordered[0:-2], self.images_ordered[1:-1], self.images_ordered[2:]):
+            if a.terminal is not None:
+                d1 = recarray_difference(a.node, a.terminal)
+            else:
+                d1 = recarray_difference(a.node, b.node)
+            norm1 = recarray_vdot(d1, d1)
+            if b.terminal is not None:
+                d2 = recarray_difference(b.node, b.terminal)
+            else:
+                d2 = recarray_difference(b.node, c.node)
+            norm2 = recarray_vdot(d2, d2)
+            scalar_products.append(recarray_vdot(d1, d2) / (norm1 ** 0.5 * norm2 ** 0.5))
+        return scalar_products
 
 
 def parse_commandline(argv=None):

@@ -279,22 +279,27 @@ class Image(object):
         return self._x0[subdir]
 
     def potential(self, colvars, factor=1.0, out=None):
-        'Compute the bias potential parametrized by node and spring evaluated along the possibly multidimensional order parameter x.'
+        'Compute the bias potential parametrized by self.node and self.spring evaluated for all time steps of the colvar trajectory.'
         if out is None:
             u = np.zeros(len(colvars))
         else:
             u = out
-        if not self.bias_is_isotropic:
-            raise NotImplementedError('Bias computation not implemented for anisotropic biases.')
-        node = self.node
-        spring = self.spring
-        for name in self.node.dtype.names:
-            if isinstance(spring, float):
-                k = spring
-            else:
-                k = float(spring[name])
-            u[:] += 0.5 * factor * k * np.sum((colvars._colvars[name] - node[name]) ** 2, axis=1)
-        return u
+        if self.bias_is_isotropic:
+            node = self.node
+            spring = self.spring
+            u[:] = 0.  # zero out to be sure
+            for name in self.node.dtype.names:
+                if isinstance(spring, float):
+                    k = spring
+                else:
+                    k = float(spring[name])
+                u[:] += 0.5 * factor * k * np.sum((colvars._colvars[name] - node[name]) ** 2, axis=1)
+            return u
+        else:
+            delta = recarray_difference(self.node, self.terminal)
+            norm = recarray_vdot(delta, delta) ** 0.5
+            u[:] += 0.5 * factor * self.spring * (recarray_vdot(recarray_difference(colvars._colvars, self.node), delta) / norm)**2.
+            return u
 
     def bar(self, other, subdir='colvars', T=303.15):
         'Compute thermodynamic free energy difference between this window (self) and other using BAR.'
@@ -302,14 +307,14 @@ class Image(object):
         from pyemma.util.contexts import settings
         RT = 1.985877534E-3 * T  # kcal/mol
         fields = list(self.node.dtype.names)
-        my_x = self.colvars(subdir=subdir, fields=fields)
+        self_x = self.colvars(subdir=subdir, fields=fields)
         other_x = other.colvars(subdir=subdir, fields=fields)
-        btrajs = [np.zeros((len(my_x), 2)), np.zeros((len(other_x), 2))]
-        self.potential(colvars=my_x, factor=1./RT, out=btrajs[0][:, 0])
-        other.potential(colvars=my_x, factor=1./RT, out=btrajs[0][:, 1])
+        btrajs = [np.zeros((len(self_x), 2)), np.zeros((len(other_x), 2))]
+        self.potential(colvars=self_x, factor=1./RT, out=btrajs[0][:, 0])
+        other.potential(colvars=self_x, factor=1./RT, out=btrajs[0][:, 1])
         self.potential(colvars=other_x, factor=1./RT, out=btrajs[1][:, 0])
         other.potential(colvars=other_x, factor=1./RT, out=btrajs[1][:, 1])
-        ttrajs = [np.zeros(len(my_x), dtype=int), np.ones(len(other_x), dtype=int)]
+        ttrajs = [np.zeros(len(self_x), dtype=int), np.ones(len(other_x), dtype=int)]
 
         # TODO: use some discretization (TODO; implement discretization)
         mbar = pyemma.thermo.MBAR(maxiter=100000)
@@ -382,6 +387,18 @@ class CompoundImage(Image):
         self.orthogonal_spring = orthogonal_spring
         self.colvars_def = colvars_def
         self.bias = 'compound'
+
+    def copy(self):
+        node = self.node.copy() if self.node is not None else None
+        if self.spring is None or isinstance(self.spring, float):
+            spring = self.spring
+        else:
+            spring = self.spring.copy()
+        terminal = self.terminal.copy() if self.node is not None else None
+        return CompoundImage(image_id=self.image_id, previous_image_id=self.previous_image_id,
+                             previous_frame_number=self.previous_frame_number, group_id=self.group_id,
+                             node=node, spring=spring, terminal=terminal,
+                             orthogonal_spring=self.orthogonal_spring, colvars_def=self.colvars_def, opaque=self.opaque)
 
     @classmethod
     def load(cls, config, colvars_def):
@@ -466,16 +483,20 @@ class CompoundImage(Image):
         config = ''
         a = self.node
         b = self.terminal
+        if self.orthogonal_spring is not None:
+            raise NotImplementedError('Linear (tangent) order parameter with constraint along the orthogonal direction is '
+                                      'not yet supported. Only constraint along tangent direction is implemented.')
+        # implements the equation (a-x(t))*(a-b) / ||a-b||  where * is the dot product and, x is the current point in CV space
+        # this expression is 0, if x==a==node and is equal to ||a-b|| if x==b==terminal point
         a_minus_b = recarray_difference(a, b)
         norm = np.linalg.norm(structured_to_flat(a_minus_b))
         const = recarray_vdot(a, a_minus_b) / norm
-        expr = ['%f' % const]
-        # see equation in appendix to the paper
+        expr = ['%f' % const]  # a*(a-b) / ||a-b||
         for field in a_minus_b.dtype.names:
             dim = a_minus_b[field].shape[1]
             assert a_minus_b[field].shape[0] == 1
             for i in range(dim):
-                expr.append(
+                expr.append(  # - x_i * (a-b)_i / ||a-b||
                     '{field}{dim}*{factor}'.format(field=field, dim=i + 1, factor=-a_minus_b[field][0][i] / norm))
         config += textwrap.dedent('''
                     colvar {{
