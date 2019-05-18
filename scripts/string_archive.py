@@ -4,41 +4,12 @@ import mdtraj
 import os
 import shutil
 import warnings
+import sarangi
+from sarangi.util import root
 
 
-__all__ = ['root', 'save_coor', 'save_xsc', 'load_plan', 'store', 'extract', 'write_image', 'write_colvar',
-           'load_image']
-
-# Currently this script is independent from the sarangi library and implements its own functions for reading plan files.
-
-
-def root():
-    if 'STRING_SIM_ROOT' in os.environ:
-        return os.environ['STRING_SIM_ROOT']
-    else:
-        folder = os.path.realpath('.')
-        while not os.path.exists(os.path.join(folder, '.sarangirc')) and folder != '/':
-            # print('looking at', folder)
-            folder = os.path.realpath(os.path.join(folder, '..'))
-        if os.path.exists(os.path.join(folder, '.sarangirc')):
-            return folder
-        else:
-            raise RuntimeError('Could not locate the project root. Environment variable STRING_SIM_ROOT is not set and'
-                               ' no .sarangirc file was found.')
-
-
-def is_sim_id(s):
-    try:
-        fields = s.split('_')
-        if len(fields) != 4:
-            return False
-        if not fields[0][0].isalpha():
-            return False
-        if not fields[1].isnumeric() or not fields[2].isnumeric() or not fields[3].isnumeric():
-            return False
-        return True
-    except Exception as e:
-        return False
+__all__ = ['save_coor', 'save_xsc', 'store', 'extract', 'write_image_coordinates', 'write_colvar',
+           'load_initial_coordinates']
 
 
 def sim_id_to_seq(s):
@@ -72,17 +43,6 @@ def save_xsc(traj, fname, frame=0):
     # frame.save_netcdfrst(fname_dest)
 
 
-def load_plan(fname_plan, sim_id=None):
-    import yaml
-    with open(fname_plan) as f:
-        plan = yaml.load(f)
-    string = plan['strings'][0]
-    if sim_id is None:
-        return string
-    else:
-        return next(i for i in string['images'] if i['id'] == sim_id)
-
-
 def store(fname_trajectory, fname_colvars_traj, sim_id):
     branch, iteration, image_major, image_minor = sim_id.split('_')
     fname_archived = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(
@@ -95,88 +55,87 @@ def store(fname_trajectory, fname_colvars_traj, sim_id):
     shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
 
 
-def extract(me, fname_dest_coor, fname_dest_box, top, number=-1):
-    prev_id = me['prev_image_id']
+def extract(image, fname_dest_coor, fname_dest_box, top, number=-1):
+    if isinstance(image, sarangi.image.Image):
+        prev_id = image.previous_image_id
+        frame_index = image.previous_frame_number
+    elif isinstance(image, dict):
+        prev_id = image['prev_image_id']
+        frame_index = image['prev_frame_number']
+    else:
+        raise ValueError('"image" is neither a python dict nor a sarangi Image object. Don\'t know how to handle it.')
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
         root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
     if number >= 0:
-        frame_index = number
-    else:
-        frame_index = me['prev_frame_number']
+        frame_index = number  # overwrite plan information by user selection
     frame = mdtraj.load_frame(fname_dcd, index=frame_index, top=top)
     save_coor(frame, fname_dest_coor)
     save_xsc(frame, fname_dest_box)
 
 
-def load_image(me, top_fname):
-    prev_id = me['prev_image_id']
+def load_initial_coordinates(image, top_fname):
+    if isinstance(image, sarangi.image.Image):
+        prev_id = image.previous_image_id
+        frame_index = image.previous_frame_number
+    elif isinstance(image, dict):
+        prev_id = image['prev_image_id']
+        frame_index = image['prev_frame_number']
+    else:
+        raise ValueError('"image" is neither a python dict nor a sarangi Image object. Don\'t know how to handle it.')
     branch, iteration, image_major, image_minor = prev_id.split('_')
     fname_dcd = '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}.dcd'.format(
         root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
-    frame_index = me['prev_frame_number']
     frame = mdtraj.load_frame(fname_dcd, index=frame_index, top=top_fname)
     return frame
 
 
-def write_image(me, fname_dest_pdb, top_fname):
-    if 'atoms_1' not in me:
+def write_image_coordinates(image, fname_dest_pdb, top_fname):
+    if not isinstance(image, sarangi.image.CartesianImage):
         warnings.warn('String archivist was instructed to write an image file but the plan does not contain an atom '
                       'reference. Skipping this step.')
         return
-    frame = load_image(me, top_fname)
-    atoms = me['atoms_1']
-    b_factors = [1 if (i + 1) in atoms else 0 for i in range(frame.top.n_atoms)]
+    frame = load_initial_coordinates(image, top_fname)
+    atoms = image.colvars_def['Cartesian']['atomnumbers']
+    b_factors = [1 if a.serial in atoms else 0 for a in frame.top.atoms]
     frame.save_pdb(fname_dest_pdb, bfactors=b_factors)
 
 
-def write_colvar(colvars_file, colvars_template, me):
+def write_colvar(colvars_file, string, image):
+    default_colvars_template = '$STRING_SIM_ROOT/setup/colvars.template'  # code should select which colvars to use
+
+    if string.colvars_def is not None and 'template_file' in string.colvars_def:
+        colvars_template = os.path.expandvars(string.colvars_def['template_file'])
+    else:
+        colvars_template = os.path.expandvars(default_colvars_template)
+
     if not os.path.exists(colvars_template):
-        warnings.warn('String archivist was instructed to write create an colvars input file but no template was found.'
-                      ' Skipping this step.')
+        warnings.warn('String archivist was instructed to write a colvars input file but no template was found. '
+                      'Skipping this step and hoping for the best.')
         return
 
     with open(colvars_template) as f:
         config = ''.join(f.readlines()) + '\n'
-    for restraint_name, spring_value in me['spring'].items():
-        if 'node' in me and restraint_name in me['node']:
-            center_value = me['node'][restraint_name]
-        else:
-            warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
-            center_value = '0.0'
-        spring_value_namd = str(spring_value).replace('[', '(').replace(']', ')')
-        center_value_namd = str(center_value).replace('[', '(').replace(']', ')')
-        config += 'harmonic {{\n' \
-                  'name {restraint_name}_restraint\n' \
-                  'colvars {restraint_name}\n' \
-                  'forceconstant {spring}\n' \
-                  'centers {center}\n}}\n'.format(restraint_name=restraint_name,
-                                                  center=center_value_namd,
-                                                  spring=spring_value_namd)
+
+    config += image.namd_conf(cwd='./')
+
     with open(colvars_file, 'w') as f:
         f.write(config)
 
 
-def sorted_images(string, group_id):
-    group = []
-    for image in string['images']:
-        if 'group' in image and image['group'] == group_id:
-            group.append(image)
-    # order the group by ID
-    return sorted(group, key=lambda im: sim_id_to_seq(im['id']))
-
-
 def write_re_config(string, group_id='$STRING_GROUP_ID', bias_conf_fname='bias.conf'):
-    images = sorted_images(string, group_id)
+    # TODO: move to main lib
+    images = string.group[group_id].images_ordered
     config = 'set num_replicas %d\n' % len(images)
     config += 'proc replica_bias { i } {\n  switch $i {\n'
     for i, im in enumerate(images):
         config += '  %d {\n    return {' % i
-        for restraint_name, spring_value in im['spring'].items():
-            if 'node' in im and restraint_name in im['node']:
-                center_value = im['node'][restraint_name]
+        for restraint_name in im.fields:
+            spring_value = im.spring[restraint_name]
+            if im.node is not None:
+                center_value = im.node[restraint_name]
             else:
                 warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
                 center_value = '0.0'
@@ -242,7 +201,6 @@ if __name__ == '__main__':
     re_extractor.add_argument('--config', metavar='path', default='bias.conf',
                               help='(out) file name for bias configuration file to generate')
 
-
     re_storer = subparser.add_parser('replica_store', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     re_storer.add_argument('--id', metavar='code', default='$STRING_GROUP_ID',
                            help='group ID')
@@ -258,33 +216,34 @@ if __name__ == '__main__':
     elif args.command == 'extract':
         sim_id = os.path.expandvars(args.id)
         top = os.path.expandvars(args.top)
-        me = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=sim_id)
-        extract(me=me, fname_dest_coor=args.coordinates, fname_dest_box=args.box, top=top, number=int(args.frame))
+        string = sarangi.String.load_form_fname(fname=os.path.expandvars(args.plan))
+        image = string[sim_id]
+        extract(image=image, fname_dest_coor=args.coordinates, fname_dest_box=args.box, top=top, number=int(args.frame))
 
-        write_colvar(me=me, colvars_file=args.colvars, colvars_template=os.path.expandvars(args.colvars_template))
+        write_colvar(image=image, string=string, colvars_file=args.colvars)
 
-        write_image(me=me, fname_dest_pdb=args.image, top_fname=top)
+        write_image_coordinates(image=image, fname_dest_pdb=args.image, top_fname=top)
 
     elif args.command == 'replica_extract':
         top = os.path.expandvars(args.top)
         group_id = os.path.expandvars(args.id)
-        string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
+        string = sarangi.String.load_form_fname(fname=os.path.expandvars(args.plan))
 
         # write bias definition
         write_re_config(string=string, group_id=group_id, bias_conf_fname=args.config)
 
         # write initial conditions
-        for i, image in enumerate(sorted_images(string, group_id=group_id)):
-            print('replica-extract: %s -> in.%d.coor' % (image['id'], i))
-            extract(image, fname_dest_coor='in.%d.coor' % i, fname_dest_box='in.%d.xsc' % i, top=top)
+        for i, image in enumerate(string.group[group_id].images_ordered):
+            print('replica-extract: %s -> in.%d.coor' % (image.image_id, i))
+            extract(image=image, fname_dest_coor='in.%d.coor' % i, fname_dest_box='in.%d.xsc' % i, top=top)
 
     if args.command == 'replica_store':
         group_id = os.path.expandvars(args.id)
-        string = load_plan(fname_plan=os.path.expandvars(args.plan), sim_id=None)
-        for i, image in enumerate(sorted_images(string, group_id=group_id)):
-            print('replica-store: out.%d.sort.dcd -> %s' % (i, image['id']))
-            store(fname_trajectory='out.%d.sort.dcd' % i, fname_colvars_traj='out.%d.sort.colvars.traj' % i, sim_id=image['id'])
-            # TODO: reorder by Hamiltonian (dcd and colvars.traj)
-            # TODO: store more data, like the history of biases?
+        string = sarangi.String.load_form_fname(fname=os.path.expandvars(args.plan))
+        for i, image in enumerate(string.group[group_id].images_ordered):
+            print('replica-store: out.%d.sort.dcd -> %s' % (i, image.image_id))
+            store(fname_trajectory='out.%d.sort.dcd' % i, fname_colvars_traj='out.%d.sort.colvars.traj' % i, sim_id=image.image_id)
+            # TODO: reorder by Hamiltonian (dcd and colvars.traj) ?
+            # TODO: store more data, like the history of biases? ?
 
     print('end archivist')

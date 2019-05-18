@@ -1,4 +1,7 @@
-from .sarangi import String, Image, load, root, init, main, is_sim_id, All
-from . import string_archive
+from .sarangi import String, load, main
+from .util import is_sim_id, All, root
+from .image import Image
 from . import observables
-from . import helper
+from . import util
+from . import colvars
+from . import image

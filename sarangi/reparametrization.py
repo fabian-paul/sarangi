@@ -25,7 +25,14 @@ def point_at_arc_length_in_segment(p, q, s0, d):
 
 
 def compute_equidistant_nodes(old_nodes, d):
-    r'Convert old list of nodes to new list of equidistant nodes'
+    '''Convert old list of nodes to new list of roughly equidistant nodes by following the polyline through the old nodes.
+
+        Notes
+        -----
+        New nodes are equidistant in the subspace formed by the polyline that goes through the old nodes.
+        New nodes are not equidistant in Cartesian space.
+    '''
+
     pts = []
     s = 0
     for i in range(len(old_nodes) - 1):
@@ -42,7 +49,7 @@ def compute_equidistant_nodes(old_nodes, d):
 
 
 def next_at_distance(p, q, o, r, s0=0.):
-    'compute intersection of sphere with radius r around o and the segment from p to q. Return point and arc length'
+    'Compute intersection of sphere with radius r around o and the segment from p to q. Return point and arc length.'
     n = q - p
     x = p - o
     a = np.dot(n, n)
@@ -63,7 +70,7 @@ def next_at_distance(p, q, o, r, s0=0.):
 
 
 def find_intersecting_segment(nodes, o, d, i_edge0, s0, direction=-1):
-    'For all segments between nodes starting from node i_edge0, find intersection with point at distance d from o.'
+    'For all segments between nodes starting from nodes[i_edge0], find intersection with point at distance d from o.' \
     'In first segment, arc length of intersecting point must be larger then s0. Return point and arc length'
     st = direction
     # print('i_edge0', i_edge0)
@@ -79,7 +86,8 @@ def find_intersecting_segment(nodes, o, d, i_edge0, s0, direction=-1):
     return -1, None, 0.
 
 
-def compute_equidistant_nodes_2(old_nodes, d, direction=-1):
+def compute_equidistant_nodes_2(old_nodes, d, direction=-1, d_skip=None):
+    r'Convert old list of nodes to new list of exactly equidistant nodes (equidistant in Cartesian space).'
     nodes = np.array(old_nodes)
     if nodes.ndim != 2:
         raise ValueError('old_nodes must be 2-D')
@@ -91,6 +99,13 @@ def compute_equidistant_nodes_2(old_nodes, d, direction=-1):
         res.append(point)
         i_edge0, point, s0 = find_intersecting_segment(nodes, point, d, i_edge0, s0, direction)
         # print(i_edge0)
+    # done, finally check if the last newly interpolated node is too close to the end node and maybe remove it
+    if d_skip is not None and np.linalg.norm(res[-1] - nodes[-1, :]) < d_skip:
+        res.pop()
+        percentage = 100 * np.linalg.norm(res[-1], nodes[-1, :]) / d
+        warnings.warn('During reparametrization, the last interpolated image is closer than %f to the fixed end of the '
+                      'string. Did not add that interpolating image. This leads to a image distance at the end of the '
+                      'string that is %d%% larger than normal.' % (d_skip, percentage))
     return np.concatenate((res, [nodes[-1, :]]))
 
 
@@ -116,7 +131,7 @@ def reorder_nodes(nodes):
 
     if len(res) < len(nodes):
         warnings.warn(
-            'String became shorter on reordering, looks like we deleted one (or more) omega(s) '
-            'consisting nodes ' + ', '.join([str(i) for i in available]) + '.', RuntimeWarning)
+            'String became shorter on reordering, looks like we deleted one (or more) meander(s) '
+            'consisting of nodes ' + ', '.join([str(i) for i in available]) + '.', RuntimeWarning)
 
     return res
