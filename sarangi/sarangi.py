@@ -691,7 +691,7 @@ class String(object):
         '''
         # RT = * T  # kcal/mol
         forces = []
-        fields = list(self.images_ordered[0].node.dtype.names)
+        fields = self.images_ordered[0].fields
         support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
         for image in self.images_ordered:
             for f in fields:
@@ -699,15 +699,15 @@ class String(object):
                     raise NotImplementedError('PMF computation currently only implemented for non-elliptic forces')
             try:
                 if image.bias_is_isotropic:
-                    mean = image.colvars(subdir=subdir, fields=fields)
+                    mean = image.colvars(subdir=subdir, fields=fields).mean
                     node_proj = Colvars.arclength_projection(structured_to_flat(image.node, fields=fields), support_points, order=1)[0]
                     #print(node_proj)
-                    mean_proj = Colvars.arclength_projection(mean.as2D(fields=fields), support_points, order=1)[0]
+                    mean_proj = Colvars.arclength_projection(structured_to_flat(mean, fields=fields), support_points, order=1)[0]
+                    #print(mean_proj)
                     #print(type(mean_proj), type(node_proj), image.spring[fields[0]][0])
                     forces.append((node_proj - mean_proj)*image.spring[fields[0]][0])  # TODO: implement the general anisotropic case (TODO: move part to the Image classes)
                 else:
-                    raise NotImplementedError('Tangential force calculation not yet implemented.')
-                    #forces.append(image.tangential_displacement*image.spring)
+                    forces.append(np.mean(image.tangential_displacement())*image.spring)
             except FileNotFoundError as e:
                 forces.append(0.)
                 warnings.warn(str(e) + ' Replacing the missing mean force value by a value of zero.')

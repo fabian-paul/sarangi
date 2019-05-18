@@ -151,13 +151,22 @@ def recarray_difference(a, b):
     return c
 
 
-def recarray_vdot(a, b):
+def recarray_vdot(a, b, allow_broadcasting=False):
     if not all(n in b.dtype.names for n in a.dtype.names) and all(n in b.dtype.names for n in a.dtype.names):
         raise ValueError('a and b must have the same fields')
-    s = 0.0
-    for name in a.dtype.names:
-        s += np.vdot(a[name], b[name])
-    return s
+    if allow_broadcasting:  # TODO: do further testing
+        s = None
+        for name in a.dtype.names:
+            if s is None:
+                s = np.einsum('ti,ti->t', a[name], b[name])
+            else:
+                s += np.einsum('ti,ti->t', a[name], b[name])
+            return s
+    else:
+        s = 0.0
+        for name in a.dtype.names:
+            s += np.vdot(a[name], b[name])
+        return s
 
 
 def recarray_norm(a, rmsd=False):

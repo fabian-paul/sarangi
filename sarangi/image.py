@@ -106,8 +106,12 @@ class Image(object):
         else:
             return self._linear_namd_conf(cwd)
 
+    def openmm_conf(self, cwd):
+        raise NotImplementedError('Maybe next year.')
+
     @property
     def fields(self):
+        'Names of colvars used to define the umbrella center (node)'
         return list(self.node.dtype.fields)
 
     def __str__(self):
@@ -356,6 +360,14 @@ class Image(object):
         return np.linalg.norm(
             structured_to_flat(mean).reshape(-1) - structured_to_flat(o, fields=list(mean.dtype.names)).reshape(-1),
             ord=ord) * (n_atoms ** -0.5)
+
+    def tangential_displacement(self, subdir='colvars'):
+        'Return trajectory of tangential displacements (trajectory of signed scalar values, typically in units of Angstroms)'
+        x = self.colvars(subdir=subdir, fields=self.fields)._colvars
+        delta = recarray_difference(self.node, self.terminal)
+        norm = recarray_vdot(delta, delta)**0.5
+        return recarray_vdot(recarray_difference(x, self.node), delta, allow_broadcasting=True) / norm
+
 
     def set_terminal_point(self, point):
         if sorted(point.dtype.names) != sorted(self.node.dtype.names):
