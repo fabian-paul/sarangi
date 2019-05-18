@@ -302,7 +302,8 @@ class Image(object):
         else:
             delta = recarray_difference(self.node, self.terminal)
             norm = recarray_vdot(delta, delta) ** 0.5
-            u[:] += 0.5 * factor * self.spring * (recarray_vdot(recarray_difference(colvars._colvars, self.node), delta) / norm)**2.
+            disp = -recarray_vdot(recarray_difference(colvars._colvars, self.node), delta, allow_broadcasting=True) / norm
+            u[:] += 0.5 * factor * self.spring * disp**2.
             return u
 
     def bar(self, other, subdir='colvars', T=303.15):
@@ -366,7 +367,7 @@ class Image(object):
         x = self.colvars(subdir=subdir, fields=self.fields)._colvars
         delta = recarray_difference(self.node, self.terminal)
         norm = recarray_vdot(delta, delta)**0.5
-        return recarray_vdot(recarray_difference(x, self.node), delta, allow_broadcasting=True) / norm
+        return -recarray_vdot(recarray_difference(x, self.node), delta, allow_broadcasting=True) / norm
 
 
     def set_terminal_point(self, point):

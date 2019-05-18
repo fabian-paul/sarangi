@@ -143,6 +143,7 @@ def recarray_average(a, b):
 
 
 def recarray_difference(a, b):
+    'a - b'
     if not all(n in b.dtype.names for n in a.dtype.names) and all(n in b.dtype.names for n in a.dtype.names):
         raise ValueError('a and b must have the same fields')
     c = np.zeros_like(a)
