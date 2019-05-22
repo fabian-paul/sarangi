@@ -101,7 +101,9 @@ class Image(object):
         return self.terminal is None
 
     def namd_conf(self, cwd):
-        if self.bias_is_isotropic:
+        if self.swarm:  # don't apply biasing forces
+            return ''
+        elif self.bias_is_isotropic:
             return self._isotropic_namd_conf(cwd)
         else:
             return self._linear_namd_conf(cwd)
@@ -201,6 +203,10 @@ class Image(object):
         env['STRING_ARCHIVE'] = self.base
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/../scripts/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
+        if self.swarm:
+            env['STRING_SWARM'] = 1
+        else:
+            env['STRING_SWARM'] = 0
         env['STRING_BASE'] = '{root}/strings/{branch}_{iteration:03d}'.format(root=root_,
                                                                               branch=self.branch,
                                                                               iteration=self.iteration)
@@ -359,7 +365,7 @@ class Image(object):
         else:
             ord = None
         return np.linalg.norm(
-            structured_to_flat(mean).reshape(-1) - structured_to_flat(o, fields=list(mean.dtype.names)).reshape(-1),
+            structured_to_flat(mean, fields=list(mean.dtype.names)).reshape(-1) - structured_to_flat(o, fields=list(mean.dtype.names)).reshape(-1),
             ord=ord) * (n_atoms ** -0.5)
 
     def tangential_displacement(self, subdir='colvars'):
@@ -375,11 +381,15 @@ class Image(object):
             raise ValueError('point does not match field signature')
         self.terminal = point.copy()
         if self.spring is not None and not isinstance(self.spring, float):
-            warnings.warn('Setting terminal point but spring is still parametrizing an  "elliptic" bias. '
+            warnings.warn('Setting terminal point but spring is still parametrizing an "elliptic" bias. '
                           'If spring is not changed this won\'t run.')
 
     def discretize(self):
         raise NotImplementedError('Not yet implemented.')
+
+    @property
+    def swarm(self):
+        return self.spring is None
 
 
 class CompoundImage(Image):

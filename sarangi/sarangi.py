@@ -618,6 +618,7 @@ class String(object):
 
     def fel(self, subdir='colvars', T=303.15):
         'Compute an estimate of the free energy along the string, by running BAR for adjacent images'
+        self.check_order(subdir=subdir)
         f = np.zeros(len(self.images) - 1) + np.nan
         mbar = [None] * (len(self.images) - 1)
         deltaf = [None] * (len(self.images) - 1)
@@ -727,17 +728,18 @@ class String(object):
 
         RT = 1.985877534E-3 * T  # kcal/mol
 
-        fields = list(self.images_ordered[0].node.dtype.names)
+        fields = self.images_ordered[0].fields
         for image in self.images.values():
-            if list(image.node.dtype.names) != fields:
+            if image.fields != fields:
                 raise RuntimeError('Images have varying node dimensions, cannot use this MBAR wrapper.')
-            if list(image.spring.dtype.names) != fields:
+            if not isinstance(image.spring.dtype.names, float) and list(image.spring.dtype.names) != fields:
                 raise RuntimeError('Images have varying spring dimensions, cannot use this MBAR wrapper.')
 
         # collect all possible biases
+        # FIXME: this will not recognize duplicate biases
         unique_biases = []
         for im in self.images_ordered:
-            bias = (im.node, im.spring)
+            bias = (im.node, im.spring, im)
             if bias not in unique_biases:
                 unique_biases.append(bias)
         print('found', len(unique_biases), 'unique biases')
@@ -752,8 +754,7 @@ class String(object):
                 btraj = np.zeros((len(x), K))
                 ttraj = np.zeros(len(x), dtype=int) + i_im
                 for k, bias in enumerate(unique_biases):
-                    node, spring = bias
-                    btraj[:, k] = Image.potential(x=x, node=node, spring=spring) / RT
+                    bias[2].potential(colvars=x, factor=1./RT, out=btraj[:, k])
                 btrajs.append(btraj)
                 ttrajs.append(ttraj)
 
@@ -980,6 +981,21 @@ class String(object):
             norm2 = recarray_vdot(d2, d2)
             scalar_products.append(recarray_vdot(d1, d2) / (norm1 ** 0.5 * norm2 ** 0.5))
         return scalar_products
+
+
+    def check_order(self, subdir='colvars'):
+        'Check whether the ordering by ID (as in .images_ordered) is consistent with the node distance.'
+        fields = self.images_ordered[0].fields
+        nodes = [structured_to_flat(im.colvars(subdir=subdir, fields=fields).mean, fields=fields) for im in
+                 self.images_ordered]
+        nodes = np.concatenate(nodes)
+        for i, n in enumerate(nodes):
+            dist = np.linalg.norm(nodes - n[np.newaxis, :], axis=1)
+            me, top1, top2 = np.argsort(dist)[0:3]
+            # print(i, me, top1, top2)
+            if top1 != i + 1 and top1 != i - 1:
+                print('Node %d is not closest to its neighbors according to ordering by ID. Clostest node is %d.' % (
+                i, top1))
 
 
 def parse_commandline(argv=None):
