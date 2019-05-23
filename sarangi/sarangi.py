@@ -444,7 +444,7 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def reparametrize(self, subdir='colvars', fields=All, rmsd=True, linear_bias=0):
+    def reparametrize(self, subdir='colvars', fields=All, rmsd=True, linear_bias=0, swarm=None):
         'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String.'
 
         # collect all means, in the same time check that all the coordinate dimensions and
@@ -502,10 +502,12 @@ class String(object):
             best_image = responses[best_idx][0]
             best_step = responses[best_idx][1]['i']
 
+            if swarm is None:
+                swarm = best_image.swarm
             new_image = image_class(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
                                     previous_image_id=best_image.image_id, previous_frame_number=best_step,
                                     node=node, terminal=None, spring=best_image.spring.copy(),
-                                    group_id=best_image.group_id)
+                                    group_id=best_image.group_id, swarm=swarm)
 
             new_string.images[new_image.seq] = new_image
 
@@ -629,7 +631,7 @@ class String(object):
                 warnings.warn(str(e))
         return -np.cumsum(f), deltaf, mbar
 
-    def arclength_projections(self, subdir='colvars', order=1, x0=False):
+    def arclength_projections(self, subdir='colvars', order=1, x0=False, curve_defining_string=None):
         r'''For all frames in all simulations, compute the arc length order parameter.
 
         Parameters
@@ -640,6 +642,12 @@ class String(object):
         subdir: str
             If working with non-default string setup, set this to the folder name for
             the collective variable trajectories.
+        x0: boolean, default=False
+            By default project all the time series data to the curve defining string.
+            If x0 is True, only project the initial points (image.x0) to the string.
+        curve_defining_string: String object, default=self
+            Images of this string define the curve through CV space onto which the images
+            in self are projected.
 
         Notes
         -----
@@ -655,8 +663,11 @@ class String(object):
         :   Grisell Díaz Leines and Bernd Ensing. Path finding on high-dimensional free energy landscapes.
             Phys. Rev. Lett., 109:020601, 2012
         '''
-        fields = self.images_ordered[0].fields
-        support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
+        if curve_defining_string is None:
+            curve_defining_string = self
+        fields = curve_defining_string.images_ordered[0].fields
+        support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in
+                          curve_defining_string.images_ordered]
         # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
         x = []
         for r in support_points:
@@ -669,10 +680,11 @@ class String(object):
             try:
                 if x0:
                     x = image.x0(subdir=subdir, fields=fields)
-                    results.append(Colvars.arclength_projection([structured_to_flat(x, fields=fields)], support_points, order=order))
+                    results.append(Colvars.arclength_projection([structured_to_flat(x, fields=fields)],
+                                                                nodes=support_points, order=order))
                 else:
                     x = image.colvars(subdir=subdir, fields=fields)
-                    results.append(Colvars.arclength_projection(x.as2D(fields=fields), support_points, order=order))
+                    results.append(Colvars.arclength_projection(x.as2D(fields=fields), nodes=support_points, order=order))
             except FileNotFoundError as e:
                 warnings.warn(str(e))
         return results
@@ -833,74 +845,6 @@ class String(object):
 
         return mbar, xaxis
 
-    # @deprecated
-    # def mbar_RMSD_old(self, T=303.15, subdir='rmsd'):
-    #     'For RMSD-type bias: Estimate all free energies using MBAR'
-    #     # TODO: also implement the simpler case with a "simple" (possibly multidimensional) order parameter
-    #     # TODO: implement some way to provide mbar with am order parameter that is binned (discretized) -> dtrajs
-    #     # e.g. # discretize='com_distance' (how to select the number of bins?)
-    #     import collections
-    #     import pyemma.thermo
-    #
-    #     RT = 1.985877534E-3 * T  # kcal/mol
-    #
-    #     # Convention for ensemble IDs: sarangi does not use any explict ensemble IDs.
-    #     # Ensembles are simply defined by the bias parameters and are not given any canonical label.
-    #     # This is the same procedure as in Pyemma (Ch. Wehmeyer's harmonic US API).
-    #     # For data exchange, biases are simply labeled with the ID of a simulations that uses the bias.
-    #     # This is e.g. used in precomputed bias energies / precomputed spring extensions.
-    #     # Data exchange labels are not unique (there can't be any unique label that's not arbitrary).
-    #     # So we have to go back to the actual bias definitions and map them to their possible IDs.
-    #     parameters_to_names = collections.defaultdict(list)  # which bias IDs point to the same bias?
-    #     for im in self.images.values():  # TODO: have a full universal convention for defining biases (e.g. type + params)
-    #         bias_def = (im.previous_image_id, im.previous_frame_number, tuple(im.atoms_1), im.spring[0][0])  # convert back from numpy?
-    #         parameters_to_names[bias_def].append(im.image_id)
-    #     # TODO: what if the defintions span multiple string iterations or multiple branches?
-    #     K = len(parameters_to_names)  # number of (unique) ensembles
-    #     print('number of unique biases is', K)
-    #     # generate running indices for all the different biases; generate map from bias IDs to running indices
-    #     names_to_indices = {}  # index = running index
-    #     names_to_spring_constants = {}  # index = running index
-    #     for i, (bias_def, names) in enumerate(parameters_to_names.items()):
-    #         for name in names:
-    #             names_to_indices[name] = i
-    #             names_to_spring_constants[name] = bias_def[-1]
-    #
-    #     btrajs = []
-    #     ttrajs = []
-    #     for im in self.images.values():
-    #         # print('loading', im.image_id)
-    #         x = im.colvars(subdir=subdir, memoize=False)
-    #         # print('done loading')
-    #         btraj = np.zeros((len(x), K)) + np.nan  # shape??
-    #         biases_defined = set()
-    #
-    #         for name in x._pcoords.dtype.names:
-    #             if name in names_to_indices:
-    #                 # loop over all indices
-    #                 btraj[:, names_to_indices[name]] = 0.5 * names_to_spring_constants[name] * x[name] ** 2 / RT
-    #                 biases_defined.add(names_to_indices[name])
-    #             else:
-    #                 warnings.warn('Trajectory %s contains unused observable %s.' % (im.image_id, name))
-    #         if len(biases_defined) > K:
-    #             raise ValueError('Image %s has too many biases' % im.image_id)
-    #         if len(biases_defined) < K:
-    #             raise ValueError('Image %s is missing some biases' % im.image_id)
-    #         assert not np.any(np.isnan(btraj))
-    #         btrajs.append(btraj)
-    #         ttrajs.append(np.zeros(len(x), dtype=int) + names_to_indices[im.image_id])
-    #
-    #     print('running MBAR')
-    #     mbar = pyemma.thermo.MBAR(direct_space=True, maxiter=100000, maxerr=1e-13)
-    #     mbar.estimate((ttrajs, ttrajs, btrajs))
-    #
-    #     # prepare "xaxis" to use for plots
-    #     xaxis = [-1] * len(names_to_indices)
-    #     for id_, number in names_to_indices.items():
-    #         _, _, major, minor = id_.split('_')
-    #         xaxis[number] = float(major + '.' + minor)
-    #
-    #     return mbar, xaxis
 
     @staticmethod
     def overlap_gaps(matrix, threshold=0.99):
@@ -997,6 +941,31 @@ class String(object):
                 print('Node %d is not closest to its neighbors according to ordering by ID. Clostest node is %d.' % (
                 i, top1))
 
+    def count_matrix(self, f=1.0):
+        '''Estimate MSM from swarm of trajectories data
+
+           Parameters
+           ----------
+           f : stretching factor the state indices
+
+           Returns
+           -------
+           count_matrix: ndarray
+               count matrix estimated at the maximum possible lag time
+               state indices correspond to the indices of the images in self.images_ordered,
+               if f = 1
+               Can be used to estimate free energies or kinetics (such as mean-first passage times)
+               with MSM packages such as PyEmma or MSMTools.
+        '''
+        import msmtools
+        dtrajs = []
+        s_start_images = np.maximum(self.arclength_projections(x0=True), 0.)
+        s_ends_images = np.maximum(self.arclength_projections(x0=False), 0.)
+        for s_start, s_ends in zip(s_start_images, s_ends_images):
+            for s_end in s_ends:
+                dtrajs.append([int(round(s_start[0])*f), int(round(s_end*f))])
+        return msmtools.estimation.cmatrix(dtrajs, lag=1).toarray()
+
 
 def parse_commandline(argv=None):
     import argparse
@@ -1062,6 +1031,11 @@ def main(argv=None):
     #    while True:
     #        print(string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
     #        string = string.bisect_and_propagate_util_connected(run_locally=options['run_locally']).reparametrize().propagate(wait=options['wait'], run_locally=options['run_locally'])
+
+    # while not converged:
+    #    iterate and reparametrize string
+    #    while not connected
+    #        fill gaps in string
 
 
 if __name__ == '__main__':

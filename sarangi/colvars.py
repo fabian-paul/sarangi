@@ -186,7 +186,8 @@ class Colvars(object):
             raise NotImplementedError('Nodes with ndim > 1 are not supported.')
         results_s = []
         results_z = []
-        ## TODO: this is kind of a hack, replace by the correct soltution later
+        # TODO: this (identifying the closest segment by looking for the two closest points) is kind of a hack (it's generally wrong in fact),
+        # TODO: replace by the correct solution later
         for x in points:
             i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
             if order == 0:

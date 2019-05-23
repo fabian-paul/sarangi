@@ -65,13 +65,14 @@ def between(a, e, upper, lower, excluded):
 
 
 class Image(object):
-    _known_keys = ['id', 'prev_image_id', 'prev_frame_number', 'group']
+    _known_keys = ['id', 'prev_image_id', 'prev_frame_number', 'group', 'swarm']
 
-    def __init__(self, image_id, previous_image_id, previous_frame_number, group_id, opaque):
+    def __init__(self, image_id, previous_image_id, previous_frame_number, group_id, swarm, opaque):
         self.image_id = image_id
         self.previous_image_id = previous_image_id
         self.previous_frame_number = previous_frame_number
         self.group_id = group_id
+        self.swarm = swarm
         self.opaque = opaque
         self._colvars = {}
         self._x0 = {}
@@ -81,12 +82,16 @@ class Image(object):
         image_id = config['id']
         previous_image_id = config['prev_image_id']
         previous_frame_number = config['prev_frame_number']
+        if 'swarm' in config:
+            swarm = config['swarm']
+        else:
+            swarm = False
         if 'group' in config:
             group_id = config['group']
         else:
             group_id = None
         return {'image_id': image_id, 'previous_image_id': previous_image_id,
-                'previous_frame_number': previous_frame_number, 'group_id': group_id}
+                'previous_frame_number': previous_frame_number, 'group_id': group_id, 'swarm': swarm}
 
     def dump(self):
         'Dump state of object to dictionary. Called by String.dump'
@@ -94,6 +99,8 @@ class Image(object):
                   'prev_frame_number': self.previous_frame_number}
         if self.group_id is not None:
             config['group'] = self.group_id
+        if self.swarm:
+            config['swarm'] = True
         return config
 
     @property
@@ -387,10 +394,6 @@ class Image(object):
     def discretize(self):
         raise NotImplementedError('Not yet implemented.')
 
-    @property
-    def swarm(self):
-        return self.spring is None
-
 
 class CompoundImage(Image):
     _known_keys = Image._known_keys + ['bias', 'node', 'terminal', 'spring', 'orthogonal_spring']
@@ -399,10 +402,10 @@ class CompoundImage(Image):
     # NAMD conf will expand to customfunction and multiple harmonic forces
     # spring can eb a scarlar or a vector
     def __init__(self, image_id, previous_image_id, previous_frame_number, group_id,
-                 node, spring, terminal=None, orthogonal_spring=None, colvars_def=None, opaque=None):
+                 node, spring, terminal=None, orthogonal_spring=None, colvars_def=None, swarm=None, opaque=None):
         super(CompoundImage, self).__init__(image_id=image_id, previous_image_id=previous_image_id,
                                             previous_frame_number=previous_frame_number, group_id=group_id,
-                                            opaque=opaque)
+                                            swarm=swarm, opaque=opaque)
 
         self.node = node
         self.terminal = terminal
@@ -571,10 +574,10 @@ class CartesianImage(Image):
     #    return CartesianImage(colvar_def=colvar_def)
 
     def __init__(self, image_id, previous_image_id, previous_frame_number, node, spring, terminal=None,
-                 orthogonal_spring=None, group_id=None, colvars_def=None, opaque=None):
+                 orthogonal_spring=None, group_id=None, colvars_def=None, swarm=None, opaque=None):
         super(CartesianImage, self).__init__(image_id=image_id, previous_image_id=previous_image_id,
                                              previous_frame_number=previous_frame_number, group_id=group_id,
-                                             opaque=opaque)
+                                             swarm=swarm, opaque=opaque)
         self.node = node
         self.terminal = terminal
         self.spring = spring

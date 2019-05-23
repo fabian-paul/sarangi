@@ -102,7 +102,7 @@ def compute_equidistant_nodes_2(old_nodes, d, direction=-1, d_skip=None):
     # done, finally check if the last newly interpolated node is too close to the end node and maybe remove it
     if d_skip is not None and np.linalg.norm(res[-1] - nodes[-1, :]) < d_skip:
         res.pop()
-        percentage = 100 * np.linalg.norm(res[-1], nodes[-1, :]) / d
+        percentage = 100 * np.linalg.norm(res[-1] - nodes[-1, :]) / d
         warnings.warn('During reparametrization, the last interpolated image is closer than %f to the fixed end of the '
                       'string. Did not add that interpolating image. This leads to a image distance at the end of the '
                       'string that is %d%% larger than normal.' % (d_skip, percentage))
