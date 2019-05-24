@@ -285,7 +285,7 @@ class String(object):
                 if o < 0.05:
                     new_image = string.bisect_at(i=pair[0], j=pair[1])
                     string.add_image(new_image)
-            string.write_yaml(message='bisected at positions of low overlap')
+            string.write_yaml(message='bisected at positions of low overlap')  # adds the images to the plan.yaml file
 
         returns
         -------
@@ -444,11 +444,38 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def reparametrize(self, subdir='colvars', fields=All, rmsd=True, linear_bias=0, swarm=None):
-        'Created a copy of the String where the images are reparametrized. The resulting string in an unpropagated String.'
+    def evolve(self, subdir='colvars', fields=All, rmsd=True, linear_bias=0, swarm=None):
+        '''Created a copy of the String where the images are evolved and the string is reparametrized to have equidistant images.
+
+           Parameters
+           ----------
+           rmsd: boolean
+               during reparametrization, image distance is measured with the RMSD metric that
+               takes into account the number of atoms as apposed to the Euclidean matric
+               (rmsd=False) that does not normalize by the number of atoms. Affects how
+               self.image_distance is interpreted. With rmsd=True you will get a string with
+               less images, everything else being euqal.
+               You can check len() of the resulting string, to be sure.
+
+           linear_bias: int
+               If linear_bias > 0, construct a 1-D bias that acts solely in a direction
+               tangential to the string. linear_bias = 2 uses a second order interpolation
+               to define the tangents. binear_bias = 1 uses first order.
+
+           swarm: boolean or None
+               Run a swarm of trajectories after equilibrating with an umbrella potential.
+               Refer to setup files in the setup folder for details. Images wil be run with
+               the environment variable STRING_SWARM=1.
+
+           Returns
+           -------
+           A new String object with an iteration number = 1 + iteration number of parent string (self).
+           You can propagate it using .propagate or save it to disk with .write_yaml (recommended).
+        '''
 
         # collect all means, in the same time check that all the coordinate dimensions and
         # coordinate names are the same across the string
+        fields = self.images_ordered[0].fields  # TODO: think about All...
         colvars_0 = self.images_ordered[0].colvars(subdir=subdir, fields=fields)
         real_fields = colvars_0.fields
         dims = colvars_0.dims
