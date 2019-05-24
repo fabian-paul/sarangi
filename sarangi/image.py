@@ -107,8 +107,8 @@ class Image(object):
     def bias_is_isotropic(self):
         return self.terminal is None
 
-    def namd_conf(self, cwd):
-        if self.swarm:  # don't apply biasing forces
+    def namd_conf(self, cwd='./'):
+        if self.spring is None:
             return ''
         elif self.bias_is_isotropic:
             return self._isotropic_namd_conf(cwd)
