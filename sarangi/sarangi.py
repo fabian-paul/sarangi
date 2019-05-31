@@ -351,7 +351,8 @@ class String(object):
             raise RuntimeError('Bisection produced new image id which is not unique. This should not happen.')
 
         new_image = best_image.__class__(image_id=new_image_id, previous_image_id=best_image.image_id,
-                                         previous_frame_number=best_step, node=x, spring=p.spring.copy(), group_id=None)
+                                         previous_frame_number=best_step, node=x, spring=p.spring.copy(), group_id=None,
+                                         swarm=best_image.swarm)
         # TODO: for linear bias, where to put the terminal (just the next node along the string)
         # TODO: or should we use some interpolation to control the distance between node and termimal?
 
@@ -760,7 +761,7 @@ class String(object):
         else:
             return forces
 
-    def mbar(self, subdir='colvars', T=303.15, disc_subdir='colvars', disc_fields=All, disc_centers=None):
+    def mbar(self, subdir='colvars', T=303.15, disc_subdir='colvars', disc_fields=All, disc_centers=None, f=1.0):
         'Estimate all free energies using MBAR (when running with conventional order parameters, not RMSD)'
         import pyemma
         import pyemma.thermo
@@ -785,9 +786,11 @@ class String(object):
 
         btrajs = []
         ttrajs = []
-        dtrajs = []
         K = len(unique_biases)
-        for i_im, image in enumerate(self.images.values()):
+
+        dtrajs = [np.round(np.maximum(x, 0.)*f).astype(int) for x in self.arclength_projections(x0=False)]
+
+        for i_im, image in enumerate(self.images_ordered):
             try:
                 x = image.colvars(subdir=subdir, fields=fields, memoize=False)
                 btraj = np.zeros((len(x), K))
@@ -796,12 +799,11 @@ class String(object):
                     bias[2].potential(colvars=x, factor=1./RT, out=btraj[:, k])
                 btrajs.append(btraj)
                 ttrajs.append(ttraj)
-
-                if disc_centers is not None:
-                    y = image.colvars(subdir=disc_subdir, fields=disc_fields, memoize=False).as2D(fields=disc_fields)
-                    dtrajs.append(pyemma.coordinates.assign_to_centers(y, centers=disc_centers)[0])
-                else:
-                    dtrajs.append(np.zeros(len(x), dtype=int))
+                #if disc_centers is not None:
+                #    y = image.colvars(subdir=disc_subdir, fields=disc_fields, memoize=False).as2D(fields=disc_fields)
+                #    dtrajs.append(pyemma.coordinates.assign_to_centers(y, centers=disc_centers)[0])
+                #else:
+                #    dtrajs.append(np.zeros(len(x), dtype=int))
             except FileNotFoundError as e:
                 warnings.warn(str(e))
 
@@ -968,7 +970,7 @@ class String(object):
                 print('Node %d is not closest to its neighbors according to ordering by ID. Clostest node is %d.' % (
                 i, top1))
 
-    def count_matrix(self, f=1.0):
+    def count_matrix(self, f=1.0, subdir_init='colvars_init'):
         '''Estimate MSM from swarm of trajectories data
 
            Parameters
@@ -986,11 +988,14 @@ class String(object):
         '''
         import msmtools
         dtrajs = []
-        s_start_images = np.maximum(self.arclength_projections(x0=True), 0.)
+        #if subdir_init is None:
+        #    s_starts_images = np.maximum(self.arclength_projections(x0=True), 0.)
+        #else:
+        s_starts_images = np.maximum(self.arclength_projections(subdir=subdir_init, x0=False), 0.)
         s_ends_images = np.maximum(self.arclength_projections(x0=False), 0.)
-        for s_start, s_ends in zip(s_start_images, s_ends_images):
-            for s_end in s_ends:
-                dtrajs.append([int(round(s_start[0])*f), int(round(s_end*f))])
+        for s_starts, s_ends in zip(s_starts_images, s_ends_images):
+            for s_start, s_end in zip(s_starts, s_ends):
+                dtrajs.append([int(round(s_start)*f), int(round(s_end*f))])
         return msmtools.estimation.cmatrix(dtrajs, lag=1).toarray()
 
 
