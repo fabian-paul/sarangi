@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import warnings
 from .util import All, AllType, structured_to_flat, length_along_segment
 
 __all__ = ['Colvars']
@@ -8,13 +9,12 @@ __all__ = ['Colvars']
 class Colvars(object):
     def __init__(self, folder, base, fields=All):
         self._mean = None
-        self._var = None
+        #self._var = None
         self._cov = None
         fname = folder + '/' + base
         if os.path.exists(fname + '.npy'):
             self._colvars = np.load(fname + '.npy')
             if not isinstance(fields, AllType):
-                #print('Hello fields!', fields, type(fields))
                 self._colvars = self._colvars[fields]
         elif os.path.exists(fname + '.colvars.traj'):
             self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
@@ -90,22 +90,27 @@ class Colvars(object):
         return np.core.records.fromarrays(colgroups, dtype=dtype)
 
     def _compute_moments(self):
-        if self._mean is None or self._var is None:
+        if self._mean is None or self._cov is None:
             pcoords = self._colvars
             if pcoords.dtype.names is None:
+                warnings.warn('Colvars that were loaded form file are not in structured format. This case is not fully supported. Expect things to fail.')
                 self._mean = np.mean(pcoords, axis=0)
                 self._var = np.var(pcoords, axis=0)
+                self._cov = np.dot(pcoords.T, pcoords) / pcoords.shape[0]
             else:
                 self._mean = np.zeros(1, pcoords.dtype)
+                mean_flat = np.zeros(sum(self.dims))
+                k = 0
                 for n in pcoords.dtype.names:
-                    self._mean[n] = np.mean(pcoords[n], axis=0)
+                    column_mean = np.mean(pcoords[n], axis=0)
+                    self._mean[n] = column_mean
+                    mean_flat[k:k + column_mean.shape[0]] = column_mean
+                    k += column_mean.shape[0]
                 self._var = np.zeros(1, pcoords.dtype)
                 for n in pcoords.dtype.names:
                     self._var[n] = np.var(pcoords[n], axis=0)
-            #mean_free = pcoords - mean[np.newaxis, :]
-            #cov = np.dot(mean_free.T, mean_free) / pcoords.shape[0]
-            #self._mean = mean
-            #self._cov = cov
+                X = self.as2D(self.fields) - mean_flat[np.newaxis, :]
+                self._cov = np.dot(X.T, X) / len(self)
 
     def __getitem__(self, items):
         return self._colvars[items]
@@ -126,6 +131,14 @@ class Colvars(object):
         self._compute_moments()
         return self._mean
 
+    def bootstrap_mean(self):
+        'Perform bootstrap and return a sample for the mean.'
+        indices = np.random.randint(low=0, high=len(self)-1, size=len(self))
+        mean = np.zeros(1, self._colvars.dtype)
+        for n in self._colvars.dtype.names:
+            mean[n] = np.mean(self._colvars[n][indices], axis=0)
+        return mean
+
     @property
     def var(self):
         self._compute_moments()
@@ -136,10 +149,19 @@ class Colvars(object):
         self._compute_moments()
         return self._cov
 
+    @property
+    def error_matrix(self):
+        'Squared standard error of the mean (full matrix, including covariance structure)'
+        self._compute_moments()
+        return self._cov / len(self)
+
     def overlap_plane(self, other, indicator='max'):
         'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
         import sklearn.svm
         clf = sklearn.svm.LinearSVC()
+        if set(self.fields) != set(other.fields):
+            raise ValueError('Attempted to compute the overlap of two sets with different dimensions. Giving up.')
+            # TODO: have option that selects the overlap automatically
         X_self = self.as2D(fields=All)
         X_other = other.as2D(fields=All)
         X = np.vstack((X_self, X_other))
@@ -178,7 +200,47 @@ class Colvars(object):
         return 0.125*np.dot(delta, np.dot(np.linalg.inv(s), delta)) + half_log_det_s - 0.5*half_log_det_s1 - 0.5*half_log_det_s2
 
     @staticmethod
+    def arclength_linear(x, curve, return_foot=False):
+        r'''Arc length of x along the polyline the goes through the points given parameter curve.
+
+            Parameters
+            ----------
+            x : ndarray((d,))
+                Point x
+
+            curve : ndarray((n, d))
+                Points that define the polyline
+
+            return_foot : boolean, optional, default=False
+                Also return the full coordinates of x projected on the polyline
+
+            Returns
+            -------
+            Project x onto the polyline and return the arc lengh of the projected point along the polyline.
+            Result is a floating point number in the range 0 <= l <= len(curve) - 1.
+            If return_points is True, also return full coordinates of projected x.
+        '''
+        distances = []
+        sigmas = []
+        feet = []
+        for i in range(len(curve) - 1):
+            a = curve[i]
+            b = curve[i + 1]
+            sigma = max(min(np.vdot(x - a, b - a) / np.vdot(b - a, b - a), 1.0), 0.0)
+            foot = (1. - sigma) * a + sigma * b
+            distances.append(np.linalg.norm(x - foot))
+            sigmas.append(sigma)
+            feet.append(foot)
+        i_min = np.argmin(distances)
+        if return_foot:
+            return i_min + sigmas[i_min], feet[i_min]
+        else:
+            return i_min + sigmas[i_min]
+
+    @staticmethod
     def arclength_projection(points, nodes, order=0, return_z=False):
+        if return_z:
+            raise NotImplementedError('return_z not yet implemented')
         if order not in [0, 1, 2]:
             raise ValueError('order must be 0 or 2, other orders are not implemented')
         nodes = np.array(nodes)
@@ -186,6 +248,13 @@ class Colvars(object):
             raise NotImplementedError('Nodes with ndim > 1 are not supported.')
         results_s = []
         results_z = []
+        if order == 1:
+            return [Colvars.arclength_linear(x, curve=nodes) for x in points]
+        elif order == 0:
+            return [np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1)) for x in points]
+        else:
+            pass  # use legacy version below
+
         # TODO: this (identifying the closest segment by looking for the two closest points) is kind of a hack (it's generally wrong in fact),
         # TODO: replace by the correct solution later
         for x in points:
@@ -198,7 +267,7 @@ class Colvars(object):
                 elif i == len(nodes) - 1:
                     i0 = len(nodes) - 2
                 else:
-                    if np.linalg.norm(x - nodes[i + 1, :]) < np.linalg.norm(x - nodes[i - 1, :]):
+                    if np.linalg.norm(x - nodes[i + 1, :]) < np.linalg.norm(x - nodes[i - 1, :]):  # based on the closest two nodes
                         i0 = i
                     else:
                         i0 = i - 1

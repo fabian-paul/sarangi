@@ -267,7 +267,7 @@ class Image(object):
 
     def colvars(self, subdir='colvars', fields=All, memoize=True):
         'Return Colvars object for the set of collective variables saved in a given subdir and limited to given fields'
-        if (subdir, tuple(fields)) in self._colvars:
+        if not isinstance(fields, AllType) and (subdir, tuple(fields)) in self._colvars:
             return self._colvars[(subdir, tuple(fields))]
         else:
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
@@ -275,7 +275,7 @@ class Image(object):
             base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
                 branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
             pcoords = Colvars(folder=folder + subdir, base=base, fields=fields)
-            if memoize:
+            if memoize and not isinstance(fields, AllType):  # All is to vague to be memoized
                 self._colvars[(subdir, tuple(fields))] = pcoords
             return pcoords
 

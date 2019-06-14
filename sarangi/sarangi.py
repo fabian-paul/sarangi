@@ -175,6 +175,12 @@ class String(object):
                     self.groups[im.group_id] = Group(group_id=im.group_id, string=self)
                 self.groups[im.group_id].add_image(im)
 
+    def _default_fields(self, selection):
+        if isinstance(selection, AllType):
+            return self.images_ordered[0].fields
+        else:
+            return selection
+
     def __str__(self):
         str_images = '{' + ', '.join(['%g:%s'%(seq, im) for seq, im in self.images.items()]) + '}'
         return 'String(branch=\'%s\', iteration=%d, images=%s, image_distance=%f, previous=%s, colvars_def=%s, opaque=%s)' % (
@@ -281,10 +287,12 @@ class String(object):
         example
         -------
             ov, ids = string.overlap(return_ids=True)
+            new_images = []
             for pair, o in zip(ids, ov):
-                if o < 0.05:
-                    new_image = string.bisect_at(i=pair[0], j=pair[1])
-                    string.add_image(new_image)
+                if o < 0.10:
+                    new_images.append( string.bisect_at(i=pair[0], j=pair[1]) )
+            for new_image in new_images:
+                string.add_image(new_image)
             string.write_yaml(message='bisected at positions of low overlap')  # adds the images to the plan.yaml file
 
         returns
@@ -358,6 +366,18 @@ class String(object):
 
         #   self.images[new_image.seq] = new_image
         return new_image
+
+    def bisect(self, threshold=0.1, write=False):
+        'Add intermediate images at locations of low overlap between images.'
+        ov, ids = self.overlap(return_ids=True)
+        new_images = []
+        for pair, o in zip(ids, ov):
+            if o < threshold:
+                new_images.append(self.bisect_at(i=pair[0], j=pair[1]))
+        for new_image in new_images:
+            self.add_image(new_image)
+        if write:
+            self.write_yaml(message='bisected at positions of low overlap')
 
     def bisect_and_propagate_util_connected(self, run_locally=False):
         s = self
@@ -691,6 +711,7 @@ class String(object):
         :   Grisell Díaz Leines and Bernd Ensing. Path finding on high-dimensional free energy landscapes.
             Phys. Rev. Lett., 109:020601, 2012
         '''
+        from tqdm.auto import tqdm
         if curve_defining_string is None:
             curve_defining_string = self
         fields = curve_defining_string.images_ordered[0].fields
@@ -704,7 +725,7 @@ class String(object):
         support_points = np.array(x)
 
         results = []
-        for image in self.images_ordered:  # TODO: return as dictionary instead?
+        for image in tqdm(self.images_ordered):  # TODO: return as dictionary instead?
             try:
                 if x0:
                     x = image.x0(subdir=subdir, fields=fields)
@@ -955,7 +976,6 @@ class String(object):
             scalar_products.append(recarray_vdot(d1, d2) / (norm1 ** 0.5 * norm2 ** 0.5))
         return scalar_products
 
-
     def check_order(self, subdir='colvars'):
         'Check whether the ordering by ID (as in .images_ordered) is consistent with the node distance.'
         fields = self.images_ordered[0].fields
@@ -970,33 +990,204 @@ class String(object):
                 print('Node %d is not closest to its neighbors according to ordering by ID. Clostest node is %d.' % (
                 i, top1))
 
-    def count_matrix(self, f=1.0, subdir_init='colvars_init'):
-        '''Estimate MSM from swarm of trajectories data
+    def count_matrix(self, f=1.0, subdir_init='colvars_init', order=1, curve_defining_string=None):
+        r'''Estimate MSM from swarm of trajectories data
 
-           Parameters
-           ----------
-           f : stretching factor the state indices
+            Parameters
+            ----------
+            f : float
+                stretching factor the state indices, arc length is multiplied by f before casting to integer
 
-           Returns
-           -------
-           count_matrix: ndarray
-               count matrix estimated at the maximum possible lag time
-               state indices correspond to the indices of the images in self.images_ordered,
-               if f = 1
-               Can be used to estimate free energies or kinetics (such as mean-first passage times)
-               with MSM packages such as PyEmma or MSMTools.
+            subdir_init : str
+                subfolder name for the colvars of the initial point / initial ensemble starting conformations
+
+            order : int
+                interpolation order for arc length computation
+
+            curve_defining_string : String
+                string object that contains nodes to use as cluster centers / or for arc length computation
+                by default this is set to self
+
+            Returns
+            -------
+            count_matrix: ndarray
+                count matrix estimated at the maximum possible lag time
+                state indices correspond to the indices of the images in self.images_ordered,
+                if f = 1
+                Can be used to estimate free energies or kinetics (such as mean-first passage times)
+                with MSM packages such as PyEmma or MSMTools.
         '''
         import msmtools
+        #from tqdm import tqdm_notebook as tqdm
         dtrajs = []
         #if subdir_init is None:
         #    s_starts_images = np.maximum(self.arclength_projections(x0=True), 0.)
         #else:
-        s_starts_images = np.maximum(self.arclength_projections(subdir=subdir_init, x0=False), 0.)
-        s_ends_images = np.maximum(self.arclength_projections(x0=False), 0.)
+        s_starts_images = self.arclength_projections(subdir=subdir_init, x0=False, order=order,
+                                                     curve_defining_string=curve_defining_string)
+        s_starts_images = np.maximum(s_starts_images, 0.)
+        s_ends_images = self.arclength_projections(x0=False, order=order, curve_defining_string=curve_defining_string)
+        s_ends_images = np.maximum(s_ends_images, 0.)
         for s_starts, s_ends in zip(s_starts_images, s_ends_images):
             for s_start, s_end in zip(s_starts, s_ends):
                 dtrajs.append([int(round(s_start)*f), int(round(s_end*f))])
         return msmtools.estimation.cmatrix(dtrajs, lag=1).toarray()
+
+    def fel_from_msm(self, T=303.15, f=1.0, subdir_init='colvars_init', order=1):
+        r'''Compute the PMF along the string from the stationary distribution of an MSM estimated form the swam data.
+
+            Parameters
+            ----------
+            T : float
+                temperature in Kelvin
+
+            f : float
+                see String.count_matrix
+
+            subdir_init : str
+                see String.count_matrix
+
+            order : int
+                see String.count_matrix
+
+            Returns
+            -------
+            PMF in kcal/mol computed from -RT log(pi)
+
+            Note
+            ----
+            It is assumed that the canonical ordering of the images in the string is meaningful.
+            See String.check_order to test the assumption. Also consider
+
+        '''
+        import msmtools
+        RT = 1.985877534E-3 * T  # kcal/mol
+        c = self.count_matrix(f=f, subdir_init=subdir_init, order=order)
+        t = msmtools.estimation.tmatrix(c)
+        pi = msmtools.analysis.stationary_distribution(t)
+        return -RT * np.log(pi)
+
+    def _curvature_errors_analytical(self):
+        fields = self.images_ordered[0].fields
+        n = len(self.images_ordered) - 2
+        chi = np.zeros(n) + np.nan
+        delta_chi = np.zeros(n) + np.nan
+        for i in range(n):
+            im_m = self.images_ordered[i]
+            im_i = self.images_ordered[i + 1]
+            im_p = self.images_ordered[i + 2]
+            if im_m.fields != fields or im_i.fields != fields or im_p.fields != fields:
+                warnings.warn('Images in triple (%s,%s,%s) have inconsistent fields, cannot compute curvature.' % (
+                    im_m.image_id, im_i.image_id, im_p.image_id))
+            cv_m = im_m.colvars()
+            cv_p = im_p.colvars()
+            cv_i = im_i.colvars()
+            y_m = structured_to_flat(cv_m.mean, fields=fields)[0, :]
+            y_i = structured_to_flat(cv_i.mean, fields=fields)[0, :]
+            y_p = structured_to_flat(cv_p.mean, fields=fields)[0, :]
+            t_p = y_p - y_i
+            t_i = y_i - y_m
+            l_p = np.linalg.norm(t_p)
+            l_i = np.linalg.norm(t_i)
+            chi_i = np.vdot(t_p, t_i) / (l_p*l_i)
+            chi[i] = np.abs(chi_i)
+            grad_m = t_p / (l_i*l_p) - chi_i * y_m / (t_i*t_i)  # TODO: check equations!
+            grad_i = (t_i - t_p) / (t_i*t_p) - chi_i * y_i / (t_i*t_i) - chi_i * y_i / (t_p*t_p)
+            grad_p = t_i / (l_i*l_p) - chi_i * y_p / (t_p*t_p)
+            delta_chi[i] = (np.vdot(grad_m, np.dot(cv_m.error_matrix, grad_m)) +
+                            np.vdot(grad_i, np.dot(cv_i.error_matrix, grad_i)) +
+                            np.vdot(grad_p, np.dot(cv_p.error_matrix, grad_p)))**0.5
+        return chi, delta_chi
+        #for field, k in zip(cv.fields, cv.dims):
+        #    gradient[] =
+        # TODO: also return a regularized string as a list of nodes (can be used for US or string evolution)
+
+    def _curvature_errors_sampling(self, n_samples=100):
+        from tqdm.auto import tqdm
+        fields = self.images_ordered[0].fields
+        n = len(self.images_ordered) - 2
+        chi = np.zeros(n) + np.nan
+        delta_chi = np.zeros(n) + np.nan
+        for i in tqdm(range(n)):
+            im_m = self.images_ordered[i]
+            im_i = self.images_ordered[i + 1]
+            im_p = self.images_ordered[i + 2]
+            if im_m.fields != fields or im_i.fields != fields or im_p.fields != fields:
+                warnings.warn('Images in triple (%s,%s,%s) have inconsistent fields, cannot compute curvature.' % (
+                    im_m.image_id, im_i.image_id, im_p.image_id))
+            cv_m = im_m.colvars()
+            cv_p = im_p.colvars()
+            cv_i = im_i.colvars()
+            y_m = structured_to_flat(cv_m.mean, fields=fields)[0, :]
+            y_i = structured_to_flat(cv_i.mean, fields=fields)[0, :]
+            y_p = structured_to_flat(cv_p.mean, fields=fields)[0, :]
+            t_p = y_p - y_i
+            t_i = y_i - y_m
+            l_p = np.linalg.norm(t_p)
+            l_i = np.linalg.norm(t_i)
+            chi[i] = np.abs(np.vdot(t_p, t_i) / (l_p * l_i))
+            samples = []
+            for _ in range(n_samples):
+                y_m_ = structured_to_flat(cv_m.bootstrap_mean(), fields=fields)[0, :]
+                y_i_ = structured_to_flat(cv_i.bootstrap_mean(), fields=fields)[0, :]
+                y_p_ = structured_to_flat(cv_p.bootstrap_mean(), fields=fields)[0, :]
+                t_p_ = y_p_ - y_i_
+                t_i_ = y_i_ - y_m_
+                l_p_ = np.linalg.norm(t_p_)
+                l_i_ = np.linalg.norm(t_i_)
+                chi_i_ = np.abs(np.vdot(t_p_, t_i_) / (l_p_ * l_i_))
+                samples.append(chi_i_)
+            delta_chi[i] = np.std(samples)
+        return chi, delta_chi
+
+    def curvature_errors(self, analytical=False, n_samples=100):
+        if analytical:
+            return self._curvature_errors_analytical()
+        else:
+            return self._curvature_errors_sampling(n_samples=n_samples)
+
+    def smooth(self, filter_width=3, points='mean'):
+        'Smooth the string by applying an moving average filter to the nodes'
+        fields = self.images_ordered[0].fields
+        nodes = []
+        for im in self.images_ordered:
+            if points == 'mean':
+                nodes.append(structured_to_flat(im.colvars().mean, fields=fields)[0, :])
+            elif points == 'bootstrap':
+                nodes.append(structured_to_flat(im.colvars().bootstrap_mean(), fields=fields)[0, :])
+            elif points == 'node':
+                nodes.append(structured_to_flat(im.node, fields=fields)[0, :])
+            else:
+                raise ValueError('Unrecognized value of parameter points. Should by one of "mean", "node" or "bootstrap".')
+        nodes = np.array(nodes)
+        smoothed = np.zeros_like(nodes)
+        for i in range(nodes.shape[1]):
+            padded = np.pad(nodes[:, i], (filter_width // 2, filter_width - 1 - filter_width // 2), mode='edge')
+            smoothed[:, i] = np.convolve(padded, np.ones((filter_width,)) / filter_width, mode='valid')
+        # preserve initial and final nodes
+        smoothed[0, :] = nodes[0, :]
+        smoothed[-1, :] = nodes[-1, :]
+        # TODO: convert to string?
+
+        # compute the hypothetical length of the string after equidistant reparametrization
+        ordered_means = reorder_nodes(nodes=smoothed)
+        new_len = len(compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance, d_skip=self.image_distance))
+
+        # TODO: compute some curvatures ...
+
+        return smoothed, new_len
+
+        #new_nodes = (nodes[0], nodes[-1])
+        # TODO: return what kind of object? # TODO: have some simpler container class that does not have pointer to previous simulation...
+
+    def smoothing_error(self, filter_width=3, n_samples=100):
+        from tqdm.auto import tqdm
+        from .reparametrization import curvatures
+        chi_samples = []
+        for _ in tqdm(range(n_samples)):
+            nodes, length = self.smooth(filter_width=filter_width, points='bootstrap')
+            chi_samples.append(curvatures(nodes))
+        return np.std(chi_samples, axis=0)
 
 
 def parse_commandline(argv=None):
@@ -1042,6 +1233,17 @@ def load(branch='AZ', offset=0):
                 iteration = max([iteration, int(folder_iteration)])
     print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + offset))
     return String.load(branch=branch, iteration=iteration + offset)
+
+
+#def list_branches():
+#    branches = []
+#    folder = root() + '/strings/'
+#    for entry in os.listdir(folder):
+#        splinters = entry.split('_')
+#        if len(splinters) == 2:
+#            folder_branch, folder_iteration = splinters
+#            folder_iteration.isdigit():
+#                iteration = max([iteration, int(folder_iteration)])
 
 
 def main(argv=None):

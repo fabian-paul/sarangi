@@ -1,6 +1,7 @@
 import numpy as np
 import warnings
 
+# TODO: rename module to geometry?
 
 def point_at_arc_length_in_segment(p, q, s0, d):
     r'''Get point at arc length s + d on the segment [p, q].
@@ -135,3 +136,18 @@ def reorder_nodes(nodes):
             'consisting of nodes ' + ', '.join([str(i) for i in available]) + '.', RuntimeWarning)
 
     return res
+
+def curvatures(nodes):
+    n = nodes.shape[0] - 2
+    chi = np.zeros(n)
+    for i in range(n):
+        y_m = nodes[i, :]
+        y_i = nodes[i + 1, :]
+        y_p = nodes[i + 2, :]
+        t_p = y_p - y_i
+        t_i = y_i - y_m
+        l_p = np.linalg.norm(t_p)
+        l_i = np.linalg.norm(t_i)
+        chi_i = np.vdot(t_p, t_i) / (l_p * l_i)
+        chi[i] = np.abs(chi_i)
+    return chi

@@ -28,6 +28,19 @@ def save_coor(traj, fname, frame=0):
             f.write(pack('<d', atom[2]*10.))
 
 
+def read_coor(fname='out.coor'):
+    import numpy as np
+    from struct import unpack
+    with open(fname, 'rb') as f:
+        data = f.read()
+    n_atoms = unpack('<L', data[0:4])[0]
+    xyz = np.zeros((n_atoms, 3))
+    for i in range(n_atoms):
+        i0 = 4 + i*3*8
+        xyz[i, :] = unpack('<ddd', data[i0:i0 + 8*3])
+    return xyz*0.1  # convert Angstroms to nanometers
+
+
 def save_xsc(traj, fname, frame=0):
     f = traj[frame]
     s = '# NAMD extended system configuration output file\n'
