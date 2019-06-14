@@ -465,7 +465,7 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000)  # default_flow_style=False,
 
-    def evolve(self, subdir='colvars', fields=All, rmsd=True, linear_bias=0, swarm=None):
+    def evolve(self, subdir='colvars', fields=All, rmsd=False, linear_bias=0, swarm=None):
         '''Created a copy of the String where the images are evolved and the string is reparametrized to have equidistant images.
 
            Parameters
@@ -632,7 +632,7 @@ class String(object):
         ids = []
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
-            for i, (a, b) in tqdm(enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:]))):
+            for i, (a, b) in enumerate(zip(tqdm(self.images_ordered[0:-1]), self.images_ordered[1:])):
                 try:
                     o[i] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
                     ids.append((a.seq, b.seq))
@@ -644,7 +644,7 @@ class String(object):
                 return o
         else:
             o = np.zeros((len(self.images_ordered), len(self.images_ordered))) + np.nan
-            for i, a in tqdm(enumerate(self.images_ordered[0:-1])):
+            for i, a in enumerate(tqdm(self.images_ordered[0:-1])):
                 o[i, i] = 0.
                 for j, b in enumerate(self.images_ordered[i+1:]):
                     try:
@@ -959,6 +959,15 @@ class String(object):
                 group.add_image(im)
         self.groups[new_group_id] = group
 
+    @property
+    def propagated_substring(self):
+        'Return a new string that only contains the subset of propagated images.'
+        filtered_string = self.empty_copy()
+        for im in self.images.values():
+            if im.propagated:
+                filtered_string.add_image(im)
+        return filtered_string
+
     def kinkiness(self):
         'Return scalar products between successive tangents to the string. If terminal points of images are set, use them.'
         from .util import recarray_difference, recarray_vdot
@@ -991,11 +1000,14 @@ class String(object):
                 print('Node %d is not closest to its neighbors according to ordering by ID. Clostest node is %d.' % (
                 i, top1))
 
-    def count_matrix(self, f=1.0, subdir_init='colvars_init', order=1, curve_defining_string=None):
+    def count_matrix(self, return_t=False, f=1.0, subdir_init='colvars_init', order=0, curve_defining_string=None):
         r'''Estimate MSM from swarm of trajectories data
 
             Parameters
             ----------
+            return_t : bool
+                return reversible transition matrix as well
+
             f : float
                 stretching factor the state indices, arc length is multiplied by f before casting to integer
 
@@ -1017,6 +1029,8 @@ class String(object):
                 if f = 1
                 Can be used to estimate free energies or kinetics (such as mean-first passage times)
                 with MSM packages such as PyEmma or MSMTools.
+            transition_matrix: ndarray (only if return_t is True)
+                Reversible transition matrix estimated from the count matrix.
         '''
         import msmtools
         #from tqdm import tqdm_notebook as tqdm
@@ -1032,7 +1046,12 @@ class String(object):
         for s_starts, s_ends in zip(s_starts_images, s_ends_images):
             for s_start, s_end in zip(s_starts, s_ends):
                 dtrajs.append([int(round(s_start)*f), int(round(s_end*f))])
-        return msmtools.estimation.cmatrix(dtrajs, lag=1).toarray()
+        c = msmtools.estimation.cmatrix(dtrajs, lag=1)
+        if return_t:
+            t = msmtools.estimation.tmatrix(c)
+            return c.toarray(), t.toarray()
+        else:
+            return c.toarray()
 
     def fel_from_msm(self, T=303.15, f=1.0, subdir_init='colvars_init', order=0, curve_defining_string=None):
         r'''Compute the PMF along the string from the stationary distribution of an MSM estimated form the swam data.
