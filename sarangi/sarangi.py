@@ -628,10 +628,11 @@ class String(object):
 
     def overlap(self, subdir='colvars', fields=All, indicator='max', matrix=False, return_ids=False):
         'Compute the overlap (SVM) between images of the string'
+        from tqdm.auto import tqdm
         ids = []
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
-            for i, (a, b) in enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:])):
+            for i, (a, b) in tqdm(enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:]))):
                 try:
                     o[i] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
                     ids.append((a.seq, b.seq))
@@ -643,7 +644,7 @@ class String(object):
                 return o
         else:
             o = np.zeros((len(self.images_ordered), len(self.images_ordered))) + np.nan
-            for i, a in enumerate(self.images_ordered[0:-1]):
+            for i, a in tqdm(enumerate(self.images_ordered[0:-1])):
                 o[i, i] = 0.
                 for j, b in enumerate(self.images_ordered[i+1:]):
                     try:
@@ -1033,7 +1034,7 @@ class String(object):
                 dtrajs.append([int(round(s_start)*f), int(round(s_end*f))])
         return msmtools.estimation.cmatrix(dtrajs, lag=1).toarray()
 
-    def fel_from_msm(self, T=303.15, f=1.0, subdir_init='colvars_init', order=1):
+    def fel_from_msm(self, T=303.15, f=1.0, subdir_init='colvars_init', order=0, curve_defining_string=None):
         r'''Compute the PMF along the string from the stationary distribution of an MSM estimated form the swam data.
 
             Parameters
@@ -1062,7 +1063,7 @@ class String(object):
         '''
         import msmtools
         RT = 1.985877534E-3 * T  # kcal/mol
-        c = self.count_matrix(f=f, subdir_init=subdir_init, order=order)
+        c = self.count_matrix(f=f, subdir_init=subdir_init, order=order, curve_defining_string=curve_defining_string)
         t = msmtools.estimation.tmatrix(c)
         pi = msmtools.analysis.stationary_distribution(t)
         return -RT * np.log(pi)
