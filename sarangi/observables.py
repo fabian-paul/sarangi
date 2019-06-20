@@ -50,7 +50,7 @@ def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
         if iteration is None:
             string = load()  # load highest iteration of the string
         else:
-            string = String.load(branch='AZ', iteration=iteration)
+            string = String.load(branch='XCsw', iteration=iteration)
 
     observables = string.opaque['observables']
 
@@ -67,7 +67,7 @@ def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
                                                                                                iteration=string.iteration,
                                                                                                image_id=image.image_id)
                     print('checking', fname_base_out, end=' ')
-                    if os.path.exists(fname_base_out + '.npy') or (os.path.exists(fname_base_out + '.colvars.traj') and not ignore_colvar_traj) \
+                    if os.path.exists(fname_base_out + '.npy') or os.path.exists(fname_base_out + '.pdb') or (os.path.exists(fname_base_out + '.colvars.traj') and not ignore_colvar_traj) \
                         or os.path.exists(fname_base_out + '.pdb'):
                         print('exist. OK.')
                     else:
@@ -80,6 +80,7 @@ def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
 
                         print('running', full_command)
                         env = image._make_env(random_number=0)
+                        #print(env)
                         env.update(os.environ)
                         subprocess.run(full_command, shell=True, env=env)
 

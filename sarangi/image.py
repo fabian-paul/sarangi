@@ -211,9 +211,9 @@ class Image(object):
         env['STRING_ARCHIVIST'] = os.path.dirname(__file__) + '/../scripts/string_archive.py'
         env['STRING_SARANGI_SCRIPTS'] = os.path.dirname(__file__) + '/../scripts'
         if self.swarm:
-            env['STRING_SWARM'] = 1
+            env['STRING_SWARM'] = '1'
         else:
-            env['STRING_SWARM'] = 0
+            env['STRING_SWARM'] = '0'
         env['STRING_BASE'] = '{root}/strings/{branch}_{iteration:03d}'.format(root=root_,
                                                                               branch=self.branch,
                                                                               iteration=self.iteration)
