@@ -23,7 +23,7 @@ __all__ = ['String', 'root', 'load', 'main']
 __author__ = 'Fabian Paul <fapa@uchicago.edu>'
 
 
-_Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'], verbose=False)
+_Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'])
 
 
 class Group(object):
@@ -503,8 +503,8 @@ class String(object):
         current_means = []
         for image in self.images_ordered:
             colvars = image.colvars(subdir=subdir, fields=fields)
-            if colvars.fields != real_fields or colvars.dims != dims:
-                raise RuntimeError('colvars fields / dimensions are inconsistent across the string')
+            if set(colvars.fields) != set(real_fields) or colvars.dims != dims:
+                raise RuntimeError('colvars fields / dimensions are inconsistent across the string. First inconsistency in image %s.' % image.image_id)
             # The geometry functions in the reparametrization module work with 2-D numpy arrays, while the colvar
             # class used recarrays and (1, n) shaped ndarrays. We therefore convert to plain numpy and strip extra dimensions.
             current_means.append(structured_to_flat(colvars.mean, fields=real_fields)[0, :])
@@ -602,7 +602,7 @@ class String(object):
     def load_form_fname(cls, fname):
         'Create a String object by recovering the information form the yaml file whose path is given as the argument.'
         with open(fname) as f:
-            config = yaml.load(f)
+            config = yaml.load(f, Loader=yaml.SafeLoader)
         string = config['strings'][0]
         colvars_def = string['colvars'] if 'colvars' in string else None
         branch = string['branch']

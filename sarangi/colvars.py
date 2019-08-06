@@ -158,7 +158,7 @@ class Colvars(object):
     def overlap_plane(self, other, indicator='max'):
         'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
         import sklearn.svm
-        clf = sklearn.svm.LinearSVC()
+        clf = sklearn.svm.LinearSVC(max_iter=10000)
         if set(self.fields) != set(other.fields):
             raise ValueError('Attempted to compute the overlap of two sets with different dimensions. Giving up.')
             # TODO: have option that selects the overlap automatically
@@ -169,10 +169,12 @@ class Colvars(object):
         n_other = X_other.shape[0]
         labels = np.zeros(n_self + n_other, dtype=int)
         labels[n_self:] = 1
-        clf.fit(X, labels)
+        mean = np.mean(X, axis=0)
+        std = np.maximum(np.std(X, axis=0), 1.E-6)
+        clf.fit((X - mean) / std, labels)
         c = np.zeros((2, 2), dtype=int)
-        p_self = clf.predict(X_self)
-        p_other = clf.predict(X_other)
+        p_self = clf.predict((X_self - mean)/std)
+        p_other = clf.predict((X_other - mean)/std)
         c[0, 0] = np.count_nonzero(p_self == 0)
         c[0, 1] = np.count_nonzero(p_self == 1)
         c[1, 0] = np.count_nonzero(p_other == 0)
