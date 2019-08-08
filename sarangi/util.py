@@ -9,15 +9,23 @@ __all__ =['find', 'mkdir', 'load_structured', 'dump_structured', 'structured_to_
           'is_sim_id']
 
 
+def abspath_with_symlinks(p):
+    if 'PWD' in os.environ:
+       curr_path = os.environ['PWD']
+       return os.path.normpath(os.path.join(curr_path, p))
+    else:
+       return os.path.abspath(p)
+
+
 def root():
     'Return absolute path to the root directory of the project.'
     if 'STRING_SIM_ROOT' in os.environ:
         return os.environ['STRING_SIM_ROOT']
-    else:
-        folder = os.path.realpath('.')
+    else:  # follow CWD up directory by directory and search for the .sarangirc file
+        folder = abspath_with_symlinks('.')
         while not os.path.exists(os.path.join(folder, '.sarangirc')) and folder != '/':
             # print('looking at', folder)
-            folder = os.path.realpath(os.path.join(folder, '..'))
+            folder = abspath_with_symlinks(os.path.join(folder, '..'))
         if os.path.exists(os.path.join(folder, '.sarangirc')):
             return folder
         else:
@@ -91,6 +99,18 @@ def dump_structured(array):
     return config
 
 
+def exactly_2d(ary):
+    ary = np.asanyarray(ary)
+    if ary.ndim == 0:
+        return ary.reshape(1, 1)
+    elif ary.ndim == 1:
+        return ary[:, np.newaxis]
+    elif ary.ndim == 2:
+        return ary 
+    else:
+        raise ValueError('Cannot convert array to 2D.')
+
+
 def structured_to_flat(recarray, fields=None):
     r'''Convert numpy structured array to a flat numpy ndarray
 
@@ -121,7 +141,7 @@ def structured_to_flat(recarray, fields=None):
         m = idx[-1]
         x = np.zeros((n, m), dtype=float)
         for name, start, stop in zip(fields, idx[0:-1], idx[1:]):
-            x[:, start:stop] = recarray[name]
+            x[:, start:stop] = exactly_2d(recarray[name])
         return x
 
 

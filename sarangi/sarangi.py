@@ -629,12 +629,13 @@ class String(object):
     def overlap(self, subdir='colvars', fields=All, indicator='max', matrix=False, return_ids=False):
         'Compute the overlap (SVM) between images of the string'
         from tqdm.auto import tqdm
+        real_fields = self.images_ordered[0].colvars(fields=fields).fields
         ids = []
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in enumerate(zip(tqdm(self.images_ordered[0:-1]), self.images_ordered[1:])):
                 try:
-                    o[i] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
+                    o[i] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
                     ids.append((a.seq, b.seq))
                 except FileNotFoundError as e:
                     warnings.warn(str(e))
@@ -648,10 +649,10 @@ class String(object):
                 o[i, i] = 0.
                 for j, b in enumerate(self.images_ordered[i+1:]):
                     try:
-                       o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, fields=fields, indicator=indicator)
-                       o[i + j + 1, i] = o[i, i + j + 1]
+                        o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                        o[i + j + 1, i] = o[i, i + j + 1]
                     except FileNotFoundError as e:
-                       warnings.warn(str(e))
+                        warnings.warn(str(e))
             o[-1, -1] = 0.
             return o
 

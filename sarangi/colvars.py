@@ -14,10 +14,12 @@ class Colvars(object):
         fname = folder + '/' + base
         if os.path.exists(fname + '.npy'):
             self._colvars = np.load(fname + '.npy')
+            self._type = 'npy'
             if not isinstance(fields, AllType):
                 self._colvars = self._colvars[fields]
         elif os.path.exists(fname + '.colvars.traj'):
             self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
+            self._type = 'colvars.traj'
         # TODO: support pdb format for later use for gap detection!
         else:
             raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)

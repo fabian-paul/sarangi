@@ -32,7 +32,7 @@ def get_queued_jobs_SLURM():
     user = getpass.getuser()
     process = Popen(['squeue', '-o', '%j', '-h', '-u', user], stdout=PIPE, stderr=PIPE)
     stdout, stderr = process.communicate()
-    return [j.strip() for j in stdout]
+    return [j.strip().decode('ascii') for j in stdout.splitlines()]
 
 
 def get_queued_jobs():
