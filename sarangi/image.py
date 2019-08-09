@@ -248,15 +248,15 @@ class Image(object):
         else:
             job_file = self._make_job_file(env)
             if wait:
-                command = 'qsub --wait ' + job_file  # TODO: slurm (sbatch)
+                command = 'sbatch --wait ' + job_file
                 print('run', command, '(', self.job_name, ')')
                 if not dry:
-                    subprocess.run(command, shell=True)  # debug
+                    subprocess.run(command, shell=True)
             else:
-                command = 'qsub ' + job_file  # TODO: slurm (sbatch)
+                command = 'sbatch ' + job_file
                 print('run', command, '(', self.job_name, ')')
                 if not dry:
-                    subprocess.run(command, shell=True)  # debug
+                    subprocess.run(command, shell=True)
 
         return self
 
