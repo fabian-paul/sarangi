@@ -1,5 +1,6 @@
 import subprocess
 from . import load, root, is_sim_id, String
+from .util import mkdir
 
 
 def main_transform(transform_and_save, cvname='colvars'):
@@ -60,12 +61,18 @@ def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
             if image_id is None or image.image_id == image_id:
                 trajectory = image.base + '.dcd'  # TODO: have other file extensions that dcd, where to save this?
                 if os.path.exists(trajectory):
-                    fname_base_out = \
-                        '{root}/observables/{branch}_{iteration:03d}/{name}/{image_id}'.format(root=sim_root,
+                    folder_out = \
+                        '{root}/observables/{branch}_{iteration:03d}/{name}/'.format(root=sim_root,
                                                                                                name=observable['name'],
                                                                                                branch=string.branch,
-                                                                                               iteration=string.iteration,
-                                                                                               image_id=image.image_id)
+                                                                                               iteration=string.iteration)
+                    fname_base_out = folder_out + image.image_id
+                    #fname_base_out = \
+                    #    '{root}/observables/{branch}_{iteration:03d}/{name}/{image_id}'.format(root=sim_root,
+                    #                                                                           name=observable['name'],
+                    #                                                                           branch=string.branch,
+                    #                                                                           iteration=string.iteration,
+                    #                                                                           image_id=image.image_id)
                     print('checking', fname_base_out, end=' ')
                     if os.path.exists(fname_base_out + '.npy') or os.path.exists(fname_base_out + '.pdb') or (os.path.exists(fname_base_out + '.colvars.traj') and not ignore_colvar_traj) \
                         or os.path.exists(fname_base_out + '.pdb'):
@@ -79,6 +86,7 @@ def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
                                                                                           trajectory=trajectory)
 
                         print('running', full_command)
+                        mkdir(folder_out)
                         env = image._make_env(random_number=0)
                         #print(env)
                         env.update(os.environ)
