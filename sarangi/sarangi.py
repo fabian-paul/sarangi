@@ -463,7 +463,7 @@ class String(object):
                 attempt += 1
             shutil.move(fname_base + '.yaml', fname_backup)
         with open(fname_base + '.yaml', 'w') as f:
-            yaml.dump(config, f, width=1000)  # default_flow_style=False,
+            yaml.dump(config, f, width=1000, default_flow_style=None)  # default_flow_style=False,
 
     def evolve(self, subdir='colvars', fields=All, rmsd=False, linear_bias=0, swarm=None):
         '''Created a copy of the String where the images are evolved and the string is reparametrized to have equidistant images.
