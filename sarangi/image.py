@@ -6,7 +6,7 @@ from .util import load_structured, dump_structured, recarray_difference, recarra
     All, AllType, root
 
 
-__all__ = ['Image', 'load_image', 'interpolate_id']
+__all__ = ['Image', 'CompoundImage', 'CartesianImage', 'load_image', 'interpolate_id']
 
 
 # name generation routines

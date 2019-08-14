@@ -26,6 +26,7 @@ __author__ = 'Fabian Paul <fapa@uchicago.edu>'
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'])
 
 
+# TODO: currently not clear if replica exchange groups will ever be needed, better remove this code
 class Group(object):
     'Group of images, that typically belong to the same replica exchange simulation'
 
@@ -204,7 +205,7 @@ class String(object):
         j = np.fromiter((arcs[best_t].j for best_t in best), dtype=int)
         return ((pairing(i, j, ordered=False) + sz[best, 0]) * states_per_arc).astype(int)
 
-    def empty_copy(self, iteration=None, images=None, previous=None):
+    def empty_copy(self, iteration=None, images=None, previous=None, branch=None):
         'Creates a copy of the current String object. Image array is left empty.'
         if iteration is None:
             iteration = self.iteration
@@ -212,7 +213,9 @@ class String(object):
             previous = self.previous
         if images is None:
             images = dict()
-        return String(branch=self.branch, iteration=iteration, images=images, image_distance=self.image_distance,
+        if branch is None:
+            branch = self.branch
+        return String(branch=branch, iteration=iteration, images=images, image_distance=self.image_distance,
                       previous=previous, colvars_def=self.colvars_def, opaque=self.opaque)
 
     def add_image(self, image):
