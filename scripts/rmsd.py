@@ -2,7 +2,7 @@ import numpy as np
 import mdtraj
 import os
 import random
-from sarangi.string_archive import load_plan, load_image, root
+from sarangi.string_archive import load_plan, load_initial_coordinates, root
 
 
 def mkdir(folder):
@@ -40,7 +40,7 @@ def load_bias_defs(plan, sim_id, top_fname, keep_dups):
             xyz = np.load(cached_fname)
         else:
             print('extracting umbrella center', image['id'])
-            xyz = load_image(image, top_fname=top_fname).xyz[0, :, :]
+            xyz = load_initial_coordinates(image, top_fname=top_fname).xyz[0, :, :]
             np.save(cached_fname_tmp, xyz)
             os.rename(cached_fname_tmp, cached_fname)  # for NFS
         im_id = image['id']

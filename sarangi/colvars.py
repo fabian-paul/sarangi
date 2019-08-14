@@ -7,7 +7,9 @@ __all__ = ['Colvars']
 
 
 class Colvars(object):
+    # TODO: should we unify this with Pyemma?
     def __init__(self, folder, base, fields=All):
+        'Load file from folder/base(.npy|.colvars.traj|.pdb)'
         self._mean = None
         #self._var = None
         self._cov = None
@@ -20,7 +22,9 @@ class Colvars(object):
         elif os.path.exists(fname + '.colvars.traj'):
             self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
             self._type = 'colvars.traj'
-        # TODO: support pdb format for later use for gap detection!
+        elif os.path.exists(fname + '.pdb'):
+            self._colvars = Colvars.load_pdb_traj(fname + '.pdb', selection=fields)
+            self._type = 'pdb'
         else:
             raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)
 
@@ -49,6 +53,27 @@ class Colvars(object):
                 if not in_vector:
                     dims.append(dim)
         return values, dims
+
+    @staticmethod
+    def load_pdb_traj(fname, selection=All):
+        'Load PDB file or PDB trajectory and convert to numpy recarray.'
+        # TODO: should we support mdtraj selection strings?
+        import mdtraj
+        traj = mdtraj.load(fname)
+        if isinstance(selection, AllType):
+            fields = ['%s_%s%d' % (a.name, a.residue.name[0:3], a.residue.resSeq) for a in traj.top.atoms]
+            indices = slice(0, None, None)
+        else:
+            fields = []
+            indices = []
+            for i, a in enumerate(traj.top.atoms):
+                field = '%s_%s%d' % (a.name, a.residue.name[0:3], a.residue.resSeq)
+                if field in selection:
+                    fields.append(field)
+                    indices.append(i)
+        dtype = np.dtype([(name, np.float64, 3) for name in fields])
+        data = np.core.records.fromarrays(np.transpose(traj.xyz[:, indices, :], axes=(1, 0, 2)) * 10, dtype=dtype)
+        return data
 
     @staticmethod
     def load_colvar(fname, selection=All):
@@ -157,8 +182,34 @@ class Colvars(object):
         self._compute_moments()
         return self._cov / len(self)
 
-    def overlap_plane(self, other, indicator='max'):
-        'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
+    def overlap_plane(self, other, indicator='max', return_plane=False):
+        r'''Computes overlap between two distributions from classifcation error of a support vector machine trained on the data from both distributions.
+
+            Parameters
+            ----------
+            other : Colvars
+               Other colvars object to compute overlap with. Fields must match.
+
+            indicator : string, one of "max", "min", "down", "up"
+                * up: fraction of self misclassified as self as other
+                * down: fraction of other misclassified as self
+                * min: mimimum of up and down
+                * max: maximum of up and down
+
+            return_plane: bool
+                Whether to return the parameters for the separating hyperplane
+
+            Returns
+            -------
+            If return_plane is False, just returns the scalar overlap score.
+            If return_plane is True, return the triple (score, normal, b)
+            score: float
+                overlap score between 0 and 1. The higher, the better the overlap.
+            normal: ndarray(ndim)
+                normal vector of the hyperplane
+            b : float
+                intercept parameter b of the hyperplane
+         '''
         import sklearn.svm
         clf = sklearn.svm.LinearSVC(max_iter=10000)
         if set(self.fields) != set(other.fields):
@@ -184,15 +235,19 @@ class Colvars(object):
         c_sum = c.sum(axis=1)
         c_norm = c / c_sum[:, np.newaxis]
         if indicator == 'max':
-            return max(c_norm[0, 1], c_norm[1, 0])
+            return_value = max(c_norm[0, 1], c_norm[1, 0])
         elif indicator == 'min':
-            return min(c_norm[0, 1], c_norm[1, 0])
+            return_value = min(c_norm[0, 1], c_norm[1, 0])
         elif indicator == 'down':
-            return c_norm[1, 0]  # other -> self
+            return_value = c_norm[1, 0]  # other -> self
         elif indicator == 'up':
-            return c_norm[0, 1]  # self -> other
+            return_value = c_norm[0, 1]  # self -> other
         else:
-            return c_norm
+            return_value = c_norm
+        if return_plane:
+            return return_value, clf.coef_[0], clf.intercept_[0]
+        else:
+            return return_value
 
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
@@ -245,7 +300,7 @@ class Colvars(object):
     def arclength_projection(points, nodes, order=0, return_z=False):
         if return_z:
             raise NotImplementedError('return_z not yet implemented')
-        if order not in [0, 1, 2]:
+        if order not in [0, 0.5, 1, 2]:
             raise ValueError('order must be 0 or 2, other orders are not implemented')
         nodes = np.array(nodes)
         if nodes.ndim != 2:
@@ -256,16 +311,10 @@ class Colvars(object):
             return [Colvars.arclength_linear(x, curve=nodes) for x in points]
         elif order == 0:
             return [np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1)) for x in points]
-        else:
-            pass  # use legacy version below
-
-        # TODO: this (identifying the closest segment by looking for the two closest points) is kind of a hack (it's generally wrong in fact),
-        # TODO: replace by the correct solution later
-        for x in points:
-            i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
-            if order == 0:
-                results_s.append(i)
-            elif order == 1:
+        elif order == 0.5:
+            # This is a fast approximate first order method
+            for x in points:
+                i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
                 if i == 0:
                     i0 = 0
                 elif i == len(nodes) - 1:
@@ -276,10 +325,11 @@ class Colvars(object):
                     else:
                         i0 = i - 1
                 results_s.append(i0 + length_along_segment(a=nodes[i0], b=nodes[i0 + 1], x=x, clamp=False))
-            elif order == 2:  # equation from Grisell Díaz Leines and Bernd Ensing. Phys. Rev. Lett., 109:020601, 2012
+            return results_s
+        elif order == 2:
+            for x in points:
                 i = np.argmin(np.linalg.norm(x[np.newaxis, :] - nodes, axis=1))
                 if i == 0 or i == len(nodes) - 1:  # do orthogonal projection in the first and last segments
-                    #print('end node', i)
                     if i == 0:
                         i0 = 0
                     else:
@@ -306,10 +356,10 @@ class Colvars(object):
                     results_s.append(i + di*s)
                     if return_z:
                         results_z.append(np.linalg.norm(x - f*v3 + mid))  # TODO: test
-        if return_z:
-            return results_s, results_z
-        else:
-            return results_s
+            if return_z:
+                return results_s, results_z
+            else:
+                return results_s
 
     def closest_point(self, x):
         'Find the replica which is closest to x in order parameters space.'

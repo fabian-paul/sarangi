@@ -6,6 +6,5 @@ strings:
     id: AZ_001_000_000
     prev_frame_number: 0
     prev_image_id: AZ_000_000_000
-    node: {rmsd: 0}
-    spring: {rmsd: 2}
+    spring: {RMSD: 2.0}
   iteration: 1

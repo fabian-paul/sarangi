@@ -59,7 +59,7 @@ def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
         for image in string.images.values():
             #print('checking:', observable['name'], image.image_id, end=' ')
             if image_id is None or image.image_id == image_id:
-                trajectory = image.base + '.dcd'  # TODO: have other file extensions that dcd, where to save this?
+                trajectory = image.base + '.dcd'  # TODO: have other file extensions than dcd; where to save this?
                 if os.path.exists(trajectory):
                     folder_out = \
                         '{root}/observables/{branch}_{iteration:03d}/{name}/'.format(root=sim_root,

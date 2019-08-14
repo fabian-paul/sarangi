@@ -465,7 +465,7 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000, default_flow_style=None)  # default_flow_style=False,
 
-    def evolve(self, subdir='colvars', fields=All, rmsd=False, linear_bias=0, swarm=None):
+    def evolve(self, subdir='colvars', fields=All, rmsd=False, linear_bias=0, swarm=None, do_smooth=False):
         '''Created a copy of the String where the images are evolved and the string is reparametrized to have equidistant images.
 
            Parameters
@@ -496,9 +496,9 @@ class String(object):
 
         # collect all means, in the same time check that all the coordinate dimensions and
         # coordinate names are the same across the string
-        fields = self.images_ordered[0].fields  # TODO: think about All...
+        fields = self.images_ordered[0].fields
         colvars_0 = self.images_ordered[0].colvars(subdir=subdir, fields=fields)
-        real_fields = colvars_0.fields
+        real_fields = colvars_0.fields  # replaces All by concrete list of names
         dims = colvars_0.dims
         current_means = []
         for image in self.images_ordered:
@@ -513,6 +513,10 @@ class String(object):
             n_atoms = len(real_fields)
         else:
             n_atoms = 1
+
+        if do_smooth is not False:
+            from .reparametrization import smooth
+            current_means = smooth(np.array(current_means), do_smooth)
 
         # do the string reparametrization
         ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
@@ -552,9 +556,10 @@ class String(object):
 
             if swarm is None:
                 swarm = best_image.swarm
+
             new_image = image_class(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
                                     previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                                    node=node, terminal=None, spring=best_image.spring.copy(),
+                                    node=node, terminal=None, spring=best_image.spring,
                                     group_id=best_image.group_id, swarm=swarm)
 
             new_string.images[new_image.seq] = new_image
@@ -657,7 +662,7 @@ class String(object):
             return o
 
     def overlap_by_atom(self, subdir='colvars'):
-        fields =list(self.images_ordered[0].node.dtype.names)
+        fields = list(self.images_ordered[0].node.dtype.names)
         overlap = np.zeros((len(self) - 1, len(fields))) + np.nan
         images_ordered = self.images_ordered
         for i_im, (a, b) in enumerate(zip(images_ordered[0:-1], images_ordered[1:])):

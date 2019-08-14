@@ -137,6 +137,7 @@ def reorder_nodes(nodes):
 
     return res
 
+
 def curvatures(nodes):
     n = nodes.shape[0] - 2
     chi = np.zeros(n)
@@ -151,3 +152,15 @@ def curvatures(nodes):
         chi_i = np.vdot(t_p, t_i) / (l_p * l_i)
         chi[i] = np.abs(chi_i)
     return chi
+
+
+def smooth(nodes, filter_width):
+    'Smooth nodes with a moving average filter.'
+    smoothed = np.zeros_like(nodes)
+    for i in range(nodes.shape[1]):
+        padded = np.pad(nodes[:, i], (filter_width // 2, filter_width - 1 - filter_width // 2), mode='edge')
+        smoothed[:, i] = np.convolve(padded, np.ones((filter_width,)) / filter_width, mode='valid')
+    # preserve initial and final nodes
+    smoothed[0, :] = nodes[0, :]
+    smoothed[-1, :] = nodes[-1, :]
+    return smoothed
