@@ -352,7 +352,24 @@ class Image(object):
 
     # TODO: have some version that provides the relative signs (of the scalar product) of neighbors
     def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
-        'Compute the difference between the windows\'s mean and its initial position in order parameter space'
+        r'''Compute the difference between the windows\'s mean and its initial position in order parameter space
+
+        Parmeters
+        ---------
+        subdir : string
+            name of the subfolder of the 'observables' folder
+        fields : list
+            list or tuple of field names or `All`
+        norm : string or integer
+            'rmds' or a valid input for the `ord` parameter of `numpy.linalg.norm`
+        origin : string
+            one of 'x0' or 'node'/ 'center'
+
+        Returns
+        -------
+        displacement : float
+            norm of the displacement vector in the unit of the collective variables (typically Angstrom)
+        '''
         if origin == 'x0':
             o = self.x0(subdir=subdir, fields=fields)
         elif origin == 'node' or origin == 'center':
