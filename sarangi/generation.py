@@ -86,40 +86,55 @@ def collect_frames(fnames_traj_in, fname_traj_out, traj_idx, frame_idx, top_fnam
 
 
 def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, cvname='colvars', max_images=200, min_rmsd=0.3,
-           mother_string=None, command=None, compress=True, stride=1):
+           mother_string=None, command=None, compress=True, stride=1, n_clusters=50000):
     r'''Import trajectory into Sarangi and turn it into a String object (make directory structure and plan file).
 
     Parameters
     ----------
-    traj_fnames : str
+    traj_fnames : str or list of str
         File name of the input trajectory. Can also be a list of file names, in which case the contents
-        of the files is concatenated.
+        of the files is concatenated (in the exact order given by the list).
     branch : str
         Short label for the new string, e.g. 'AZ'
-    fields : list or All
-        Selection of collective variable names. If All is given, use all colvars that the command outputs.
+    fields : list or `sarangi.All`
+        Selection of collective variable names. If `All` is given, use all colvars that the `command` outputs.
     swarm : bool
         If true, propagate using the swarm of trajectories method. If false, used permanent biases (umbrella sampling).
     end : int
-        stop looking at the data past this frame (default=-1, use all frame)
+        stop looking at the data past this frame (default=-1, i.e. use all frames)
     cvname : str
-        Subfolder name where collective variables are stored.
+        Subfolder name in the "observables" folder where collective variables are stored.
     max_images : int
         New string will not contain more that this number of images.
     min_rmsd : float
-        Stop adding images to the intial string, once the RMSD bottleneck reaches this value (in Angstrom).
+        Stop adding images to the initial string, once the RMSD bottleneck reaches this value (in Angstrom).
     mother_string : sarangi.String
         String object, will copy basic configuration information from that string.
     command : str
         Executable that computes collective variables. Program must accept --id --cvname options.
+        Can be omitted in which case the command will be taken from configuration information in the
+        mother string. Either `command` or `mother_string` must be set.
     compress: bool
-        If true, only import the MD frames that will actually be used as starting points into the project.
+        If true, only import into the project the MD frames (full coordinares) that will actually be used as
+        starting points for MD integration.
         If false, copy the whole input trajectories into the project (sub-)folder.
         # TODO: allow to input collective variable file directly
     stride : int
-        Only use every n'th frame from the input.
+        Only use every n'th frame from the input trajectories.
+    n_clusters : int
+        Reduce maximum number of input data points to this number by running k-means clustering.
+        If the number of input data points is lower than this number, directly use all of them.
+
+    Returns
+    -------
+    s : sarangi.String
+        A new String object, ready to propagate.
     '''
     # TODO do some concatenation? (first convert to cvs, then concatenate; don't forget to translate indices)
+
+    # TODO: should we have some pre-clustering to reduce the data in a first step?
+    # Preclustering reduces the complexity of the shortest path algorithm form N*N to N*M where M is a fixed
+    # number of clusters. This comes at the cost of extra code complexity (more indexing operations)
 
     if isinstance(traj_fnames, str):
         traj_fnames = [traj_fnames]
@@ -135,13 +150,23 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     real_cv_dims = cv_trajs[0].dims
     # In the next few steps, we will concatenate the trajectories. But first make some indices that will allow
     # us to undo the concatenation.
-    frame_indices = np.concatenate([np.arange(len(cv_traj))[::stride] for cv_traj in cv_trajs])
-    traj_indices = np.concatenate([np.zeros(len(cv_traj), dtype=int)[::stride] + i for i, cv_traj in enumerate(cv_trajs)])
-    cvs_linear = np.concatenate([cv_traj.as2D(fields=fields)[::stride] for cv_traj in cv_trajs])
+    frame_indices = np.concatenate([np.arange(len(cv_traj))[::stride] for cv_traj in cv_trajs])[0:end]
+    traj_indices = np.concatenate([np.zeros(len(cv_traj), dtype=int)[::stride] + i for i, cv_traj in enumerate(cv_trajs)])[0:end]
+    cvs_linear = np.concatenate([cv_traj.as2D(fields=fields)[::stride] for cv_traj in cv_trajs])[0:end]
     #del cv_trajs
 
+    if len(cvs_linear) > n_clusters:
+        print('Collective variable trajectory contains many frames (>100000). Reducing data with k-means first.')
+        import sklearn.cluster
+        kmeans = sklearn.cluster.KMeans(n_clusters=n_clusters)
+        kmeans.fit(cvs_linear)
+        center_indices = [np.argmin(np.linalg.norm(cvs_linear - c, axis=1)) for c in kmeans.cluster_centers_]
+        frame_indices = frame_indices[center_indices]
+        traj_indices = traj_indices[center_indices]
+        cvs_linear = kmeans.cluster_centers_
+
     # select images using subtropical shortest path algorithm
-    image_indices_linear = denoise(cvs_linear[0:end], max_images=max_images, min_rmsd=min_rmsd)
+    image_indices_linear = denoise(cvs_linear, max_images=max_images, min_rmsd=min_rmsd)
     centers = cvs_linear[image_indices_linear, :]
 
     # import frames into the project ...
