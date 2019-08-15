@@ -11,7 +11,7 @@ from . import sarangi
 try:
     from .short_path import path as shortest_path
 except ImportError:
-    def shortest_path(cv, start, stop, lambada):
+    def shortest_path(cv, start, stop, lambada):  # fig leaf fall-back implemenation
         # TODO: debug me!
         import scipy.spatial
         import scipy.sparse.csgraph
@@ -28,8 +28,13 @@ except ImportError:
 __all__ = ['import_trajectory']
 
 
-def get_colvars(traj_fnames, branch, command, fields=util.All, cvname='colvars'):
+def get_colvars(traj_fnames, branch, command, fields=util.All, cvname='colvars', write_to_disk=True, use_existing_file=True):
     'Generate the colvars for all input trajectories (load if already precomputed, or compute them).'
+
+    if not write_to_disk:
+        import uuid
+        branch = uuid.uuid4().hex[0:10]  # to generate temporary colvar files, select some phantasy branch mame
+        # branch = 'TEMP'
 
     cv_folder = '{root}/observables/{branch}_000/{cvname}/'.format(root=util.root(), cvname=cvname, branch=branch)
     util.mkdir(cv_folder)
@@ -42,19 +47,20 @@ def get_colvars(traj_fnames, branch, command, fields=util.All, cvname='colvars')
         for ext in ['.npy', '.npz', '.colvars.traj']:
             cv_fname = cv_folder + '/' + image_id + ext
             print('seaching for', cv_fname, '...')
-            if os.path.exists(cv_fname):
+            if os.path.exists(cv_fname) and use_existing_file:
                 print('found')
                 break
-        else:  # file not found
+        else:  # file not found, recompute..
             full_command = '{command} --id {image_id} --cvname {cvname} {fname_traj}'.format(command=command,
                                                                                              cvname=cvname,
                                                                                              image_id=image_id,
                                                                                              fname_traj=traj_fname)
+            os.environ['STRING_SIM_ROOT'] = util.root()
+            full_command = os.path.expandvars(full_command)
             print('running', full_command)
-            #os.environ['STRING_SIM_ROOT'] = util.root()
             env = {'STRING_SIM_ROOT': util.root()}
             env.update(os.environ)
-            result = subprocess.run(os.path.expandvars(full_command), shell=True, env=env)
+            result = subprocess.run(full_command, shell=True, env=env)
             # print('execution result:', result)
             if result.returncode != 0:
                 raise RuntimeError('Colvar script returned with error code %d.' % result.returncode)
@@ -64,28 +70,42 @@ def get_colvars(traj_fnames, branch, command, fields=util.All, cvname='colvars')
     return cvs
 
 
-def collect_frames(fnames_traj_in, fname_traj_out, traj_idx, frame_idx, top_fname='{root}/setup/system.pdb'):
+def collect_frames(fnames_traj_in, fname_traj_out, traj_idx_unordered, frame_idx_unordered, top_fname='{root}/setup/system.pdb'):
     'Collect individual frames from multiple trajectories and write them to disk as a single trajectory.'
     import mdtraj
     top_fname = top_fname.format(root=util.root())
     top = mdtraj.load_topology(top_fname)
 
+    #
+    order = np.argsort(traj_idx_unordered, kind='stable')
+    traj_idx_ordered = traj_idx_unordered[order]
+    frame_idx_ordered = frame_idx_unordered[order]
+
+    # print a littls summary
+    #for i_traj in np.sort(np.unique(traj_idx)):
+    #    print('In trajectory piece %d, will collect %d frames.' % (i_traj, np.count_nonzero(traj_idx == i_traj)))
+
     traj_out = None
-    for i_traj in np.unique(traj_idx):
+    # We process input trajectories one by one, still the unordered input indices might jump erratically from trajectory
+    # to trajectory. That's why we had to first sort all indices by trajectory index.
+    for i_traj in np.sort(np.unique(traj_idx_ordered)):
         traj = mdtraj.load(fnames_traj_in[i_traj], top=top)
-        print('collecting frames from', fnames_traj_in[i_traj])
-        i_current_frames = frame_idx[traj_idx == i_traj]
+        print('collecting %d frames from %s.' % (np.count_nonzero(traj_idx_ordered == i_traj), fnames_traj_in[i_traj]))
+        i_current_frames = frame_idx_ordered[traj_idx_ordered == i_traj]
         assert np.all(i_current_frames < len(traj))
         if traj_out is None:
             traj_out = traj[i_current_frames]
         else:
             traj_out += traj[i_current_frames]
 
-    print('saving')
-    traj_out.save(fname_traj_out)
+    print('saving coordinate data to', fname_traj_out)
+    # Since we reordered the indices, we have to undo this here, to give back to the caller a file with
+    # the actual input ordering that was requested.
+    inv_order = np.argsort(order)
+    traj_out[inv_order].save(fname_traj_out)
 
 
-def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, cvname='colvars', max_images=200, min_rmsd=0.3,
+def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, cvname='colvars', max_images=300, min_rmsd=0.3,
            mother_string=None, command=None, compress=True, stride=1, n_clusters=50000):
     r'''Import trajectory into Sarangi and turn it into a String object (make directory structure and plan file).
 
@@ -145,17 +165,20 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
         if command is None:
             raise ValueError('One of the parameters "command" or "mother_string" must be set.')
 
-    cv_trajs = get_colvars(traj_fnames=traj_fnames, branch=branch, command=command, fields=fields, cvname=cvname)
+    cv_trajs = get_colvars(traj_fnames=traj_fnames, branch=branch, command=command, fields=fields, cvname=cvname, write_to_disk=not compress)
+    #print('CV loader returned with %d trajs.' % len(cv_trajs))
     real_fields = cv_trajs[0].fields
     real_cv_dims = cv_trajs[0].dims
     # In the next few steps, we will concatenate the trajectories. But first make some indices that will allow
     # us to undo the concatenation.
     frame_indices = np.concatenate([np.arange(len(cv_traj))[::stride] for cv_traj in cv_trajs])[0:end]
     traj_indices = np.concatenate([np.zeros(len(cv_traj), dtype=int)[::stride] + i for i, cv_traj in enumerate(cv_trajs)])[0:end]
+    #print('Indices of the all trajectories are:', np.unique(traj_indices))
     cvs_linear = np.concatenate([cv_traj.as2D(fields=fields)[::stride] for cv_traj in cv_trajs])[0:end]
     #del cv_trajs
 
     if len(cvs_linear) > n_clusters:
+        # TODO: test me!
         print('Collective variable trajectory contains many frames (>100000). Reducing data with k-means first.')
         import sklearn.cluster
         kmeans = sklearn.cluster.KMeans(n_clusters=n_clusters)
@@ -166,8 +189,10 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
         cvs_linear = kmeans.cluster_centers_
 
     # select images using subtropical shortest path algorithm
+    print('finding connected path...')
     image_indices_linear = denoise(cvs_linear, max_images=max_images, min_rmsd=min_rmsd)
-    centers = cvs_linear[image_indices_linear, :]
+    #centers = cvs_linear[image_indices_linear, :]
+    print('Length of path is %d. [%d, ..., %d]' % (len(image_indices_linear), image_indices_linear[0], image_indices_linear[-1]))
 
     # import frames into the project ...
     util.mkdir('{root}/strings/{branch}_000/'.format(root=util.root(), branch=branch))
@@ -184,20 +209,29 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
         # ... or just the relevant frames
         fname_traj_out = '{root}/strings/{branch}_000/{branch}_000_000_000.dcd'.format(root=util.root(), branch=branch)
         collect_frames(fnames_traj_in=traj_fnames, fname_traj_out=fname_traj_out,
-                       traj_idx=traj_indices[image_indices_linear], frame_idx=frame_indices[image_indices_linear])
+                       traj_idx_unordered=traj_indices[image_indices_linear], frame_idx_unordered=frame_indices[image_indices_linear])
         # colvars are outdated now, we need to recreate the file
         # TODO: delete temporary cv files ...
-        fname_cv_out = '{root}/observables/{branch}_000/{cvname}/{branch}_000_000_000.npy'.format(root=util.root(), branch=branch, cvname=cvname)
-        np.save(fname_cv_out, util.flat_to_structured(cvs_linear, fields=real_fields, dims=real_cv_dims))
+        #fname_cv_out = '{root}/observables/{branch}_000/{cvname}/{branch}_000_000_000.npy'.format(root=util.root(), branch=branch, cvname=cvname)
+        # TODO: should we overwrite ...
+        # np.save(fname_cv_out, util.flat_to_structured(cvs_linear, fields=real_fields, dims=real_cv_dims))
+        print('checking self-consistecy of the imported coordinate data...')
+        # as a side effect the next line writes a collective variable file that corresponds to the starting structures into the project directory structure
+        ok = self_consistency_compressed(fname_traj_out, branch=branch, command=command, fields=fields, cvname=cvname, 
+                 cv_centers_linear=cvs_linear[image_indices_linear], frame_indices=frame_indices[image_indices_linear], traj_indices=traj_indices[image_indices_linear])
+        if ok:
+            print('OK')
+        else:
+            raise RuntimeError('Self-consistency test of coordinate data failed. Imported frames are not identical to the ones selected by the shortest path algorithm. Something went wrong.')
 
     if mother_string is not None:
-        new_string = mother_string.empty_copy(iteration=0, branch=branch)
+        new_string = mother_string.empty_copy(iteration=1, branch=branch)
     else:
-        new_string = sarangi.String(branch=branch, iteration=0, images={}, image_distance=min_rmsd, previous=None,
+        new_string = sarangi.String(branch=branch, iteration=1, images={}, image_distance=min_rmsd, previous=None,
                                     colvars_def=None, opaque={'observables': [{'command': command, 'name': cvname}]})
 
     # create String object / plan file
-    for running_index, (center, index_linear) in enumerate(zip(centers, image_indices_linear)):
+    for running_index, index_linear in enumerate(image_indices_linear):
         if compress:
             frame_index = running_index  # just renumber sequentially
             traj_index = 0
@@ -210,7 +244,7 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
                                  previous_image_id='{branch}_000_000_{traj_index:03d}'.format(branch=branch, traj_index=traj_index),
                                  previous_frame_number=frame_index, group_id=None, node=node, spring=spring, swarm=swarm)
         new_string.add_image(im)
-
+    # save String object / plan file to disk
     time = datetime.datetime.strftime(datetime.datetime.now(), '%Y/%m/%d %I:%M')
     new_string.write_yaml(
         message='{time}: New string from initialized from trajectory "{traj_fname}".'.format(time=time, traj_fname=traj_fnames[0]))
@@ -235,7 +269,7 @@ def denoise_once(cv, lambada, geomf=None):
     Returns
     -------
     list of integers : [i1, i2, ...]
-    indices such that [cv[i1, :], cv[i2, :], ...] are the denoised trajectory
+/    indices such that [cv[i1, :], cv[i2, :], ...] are the denoised trajectory
     '''
     if geomf is None:
         geomf = (cv.shape[1]/3)**-0.5
@@ -248,9 +282,9 @@ def denoise_once(cv, lambada, geomf=None):
     return path, jumps
 
 
-def denoise(cv, max_images, min_rmsd, max_iter=20, verbose=False):
+def denoise(cv, max_images, min_rmsd, max_iter=8, verbose=True):
     lambada = 1.0  # starting value
-    lowest_infeasible_top_bound = 100.  # smallest upper bound on the parameter, such that the constraints are fulfilled
+    lowest_infeasible_top_bound = 200.  # smallest upper bound on the parameter, such that the constraints are fulfilled
     highest_feasible_bottom_bound = 0.  # highest lower bound on the parameter in the infeasible region
     path = [0, len(cv)]
 
@@ -258,6 +292,8 @@ def denoise(cv, max_images, min_rmsd, max_iter=20, verbose=False):
         try:
             path, jumps = denoise_once(cv, lambada)
         except OverflowError:
+            if verbose:
+                print('Network was disconnected by the wrong choice of a too large exponential scaling parameter.')
             error = np.inf
             n_images = 0
             feasible = False
@@ -272,9 +308,9 @@ def denoise(cv, max_images, min_rmsd, max_iter=20, verbose=False):
 
         if verbose:
             if feasible:
-                print('This is feasible')
+                print('This is feasible.')
             else:
-                print('This is infeasible')
+                print('This is infeasible.')
 
         if feasible:
             if lambada > highest_feasible_bottom_bound:  # if we found a new upper boundary, adjust it
@@ -299,6 +335,18 @@ def denoise(cv, max_images, min_rmsd, max_iter=20, verbose=False):
             lambada = 0.5*(highest_feasible_bottom_bound + lambada)
 
     return path
+
+
+def self_consistency_compressed(traj_fname, branch, command, fields, cvname, cv_centers_linear, frame_indices, traj_indices):
+    # this type of check is only run, if we are "compressing" i.e. importing individual frames, so we can rewrite the cv file
+    cv = get_colvars([traj_fname], branch=branch, command=command, fields=fields, cvname=cvname, write_to_disk=True, use_existing_file=False)[0]
+    #print('shape of the read-back colvars is:', cv.as2D(fields=fields).shape)
+    #print('expected shape is:', cv_centers_linear.shape)
+    recomputed = cv.as2D(fields=fields)
+    is_ok = np.allclose(cv.as2D(fields=fields), cv_centers_linear)
+    #for i, (i_frame, i_traj) in enumerate(zip(frame_indices, traj_indices)):
+    #    print(i_traj, i_frame, 'error:', np.max(np.abs(recomputed[i, :] - cv_centers_linear[i, :])))
+    return is_ok
 
 #def screen(cv, lambadas=None):
 #    n_atoms = 1  # TODO

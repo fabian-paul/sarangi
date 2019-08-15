@@ -1,5 +1,5 @@
 cdef extern from "_short_path.h":
-    void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * x, float * dist, char * visited, int * pred, float param);
+    void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * x, double * dist, char * visited, int * pred, float param);
 
 import numpy as np
 cimport numpy as np
@@ -25,7 +25,7 @@ def path(x, start, stop, param):
     T = x.shape[0]
     cdef int[:] pred = np.zeros((T,), np.intc)
     cdef char[:] visited = np.zeros((T,), np.int8)
-    cdef float[:] dist = np.zeros((T,), np.float32)
+    cdef double[:] dist = np.zeros((T,), np.float64)
     cdef float[:, :] y = np.require(x, dtype=np.float32, requirements=('C', 'A'))
     if start < 0 or start >= T:
         raise ValueError('start must be in the range of 0 to len(x)-1.')
