@@ -1,13 +1,29 @@
 import numpy as np
 import os
+import datetime
 import shutil
 import subprocess
-from .short_path import path as shortest_path
-# TODO: have fallback implementation of shortest_path with scipy???
 from . import colvars
 from . import image
 from . import util
 from . import sarangi
+
+try:
+    from .short_path import path as shortest_path
+except ImportError:
+    def shortest_path(cv, start, stop, lambada):
+        # TODO: debug me!
+        import scipy.spatial
+        import scipy.sparse.csgraph
+        cost = np.exp(lambada * scipy.spatial.distance_matrix(cv, cv)) - 1.  # this will fill up memory and crash
+        _, pred = scipy.sparse.csgraph.dijkstra(cost, directed=False, indices=[start], return_predecessors=True)
+        path = [stop]
+        u = stop
+        while pred[u] != start:
+            u = pred[u]
+            path.append(u)
+        return [start] + path[::-1]
+
 
 __all__ = ['import_trajectory']
 
@@ -25,7 +41,9 @@ def get_colvars(traj_fnames, branch, command, fields=util.All, cvname='colvars')
 
         for ext in ['.npy', '.npz', '.colvars.traj']:
             cv_fname = cv_folder + '/' + image_id + ext
+            print('seaching for', cv_fname, '...')
             if os.path.exists(cv_fname):
+                print('found')
                 break
         else:  # file not found
             full_command = '{command} --id {image_id} --cvname {cvname} {fname_traj}'.format(command=command,
@@ -120,7 +138,7 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     frame_indices = np.concatenate([np.arange(len(cv_traj))[::stride] for cv_traj in cv_trajs])
     traj_indices = np.concatenate([np.zeros(len(cv_traj), dtype=int)[::stride] + i for i, cv_traj in enumerate(cv_trajs)])
     cvs_linear = np.concatenate([cv_traj.as2D(fields=fields)[::stride] for cv_traj in cv_trajs])
-    del cv_trajs
+    #del cv_trajs
 
     # select images using subtropical shortest path algorithm
     image_indices_linear = denoise(cvs_linear[0:end], max_images=max_images, min_rmsd=min_rmsd)
@@ -144,33 +162,33 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
                        traj_idx=traj_indices[image_indices_linear], frame_idx=frame_indices[image_indices_linear])
         # colvars are outdated now, we need to recreate the file
         # TODO: delete temporary cv files ...
-        fname_cv_out = '{root}/observables/{cvname}/{branch}_000/{branch}_000_000_000.npy'.format(root=util.root(), branch=branch, cvname=cvname)
+        fname_cv_out = '{root}/observables/{branch}_000/{cvname}/{branch}_000_000_000.npy'.format(root=util.root(), branch=branch, cvname=cvname)
         np.save(fname_cv_out, util.flat_to_structured(cvs_linear, fields=real_fields, dims=real_cv_dims))
 
     if mother_string is not None:
         new_string = mother_string.empty_copy(iteration=0, branch=branch)
     else:
         new_string = sarangi.String(branch=branch, iteration=0, images={}, image_distance=min_rmsd, previous=None,
-                                    colvars_def=None, opaque=None)
+                                    colvars_def=None, opaque={'observables': [{'command': command, 'name': cvname}]})
 
     # create String object / plan file
     for running_index, (center, index_linear) in enumerate(zip(centers, image_indices_linear)):
-        node = np.zeros(1, dtype=center.dtype)
-        node[0] = center
-        spring = util.load_structured({name: 10. for name in cvs_linear[0].fields})
         if compress:
             frame_index = running_index  # just renumber sequentially
             traj_index = 0
         else:
             frame_index = frame_indices[index_linear]
             traj_index = traj_indices[index_linear]
+        node = cv_trajs[traj_index]._colvars[frame_index:frame_index + 1]
+        spring = util.load_structured({name: 10. for name in cv_trajs[traj_index].fields})
         im = image.CompoundImage(image_id='{branch}_001_{index:03d}_000'.format(branch=branch, index=running_index),
                                  previous_image_id='{branch}_000_000_{traj_index:03d}'.format(branch=branch, traj_index=traj_index),
                                  previous_frame_number=frame_index, group_id=None, node=node, spring=spring, swarm=swarm)
         new_string.add_image(im)
 
+    time = datetime.datetime.strftime(datetime.datetime.now(), '%Y/%m/%d %I:%M')
     new_string.write_yaml(
-        message='New string from initialized from trajectory "{traj_fname}".'.format(traj_fname=traj_fnames[0]))
+        message='{time}: New string from initialized from trajectory "{traj_fname}".'.format(time=time, traj_fname=traj_fnames[0]))
     return new_string
 
 
@@ -197,40 +215,51 @@ def denoise_once(cv, lambada, geomf=None):
     if geomf is None:
         geomf = (cv.shape[1]/3)**-0.5
     path = shortest_path(cv, 0, cv.shape[0] - 1, lambada * geomf)
+    assert np.all(np.array(path) >= 0)
     jumps = []
     for a, b in zip(path[0:-1], path[1:]):
-        d = np.exp(np.linalg.norm(a - b) * lambada * geomf)
+        d = np.linalg.norm(cv[a, :] - cv[b, :])
         jumps.append(d)
     return path, jumps
 
 
-def denoise(cv, max_images, min_rmsd, max_iter=20):
+def denoise(cv, max_images, min_rmsd, max_iter=20, verbose=False):
     lambada = 1.0  # starting value
-    lowest_infeasible_top_bound = 1000.  # smallest upper bound on the parameter, such that the constraints are fulfilled
+    lowest_infeasible_top_bound = 100.  # smallest upper bound on the parameter, such that the constraints are fulfilled
     highest_feasible_bottom_bound = 0.  # highest lower bound on the parameter in the infeasible region
     path = [0, len(cv)]
 
     for _ in range(max_iter):
-        path, jumps = denoise_once(cv, lambada)
-        error = np.median(jumps)
-        n_images = len(path)
-        print('^=', highest_feasible_bottom_bound, '_=', lowest_infeasible_top_bound)
-        print('Denoising attempt with parameter {lambada} yielded {n_images} images and median jump {median}.'.format(
-            lambada=lambada, n_images=n_images, median=error))
-
-        feasible = error >= min_rmsd and n_images <= max_images and not np.any(np.isnan(jumps))
-        if feasible:
-            print('This is feasible')
+        try:
+            path, jumps = denoise_once(cv, lambada)
+        except OverflowError:
+            error = np.inf
+            n_images = 0
+            feasible = False
         else:
-            print('This is infeasible')
+            error = np.median(jumps)
+            n_images = len(path)
+            if verbose:
+                print('^=', highest_feasible_bottom_bound, '_=', lowest_infeasible_top_bound)
+                print('Denoising attempt with parameter {lambada} yielded {n_images} images and median jump {median}.'.format(
+                lambada=lambada, n_images=n_images, median=error))
+            feasible = error >= min_rmsd and n_images <= max_images and not np.any(np.isnan(jumps))
+
+        if verbose:
+            if feasible:
+                print('This is feasible')
+            else:
+                print('This is infeasible')
 
         if feasible:
             if lambada > highest_feasible_bottom_bound:  # if we found a new upper boundary, adjust it
-                print('increased bottom bound', highest_feasible_bottom_bound, '->', lambada)
+                if verbose:
+                    print('increased bottom bound', highest_feasible_bottom_bound, '->', lambada)
                 highest_feasible_bottom_bound = lambada
         else:  # infeasible
             if lambada < lowest_infeasible_top_bound:  # if we found a new lower boundary, adjust it
-                print('decreased top bound', lowest_infeasible_top_bound, '->', lambada)
+                if verbose:
+                    print('decreased top bound', lowest_infeasible_top_bound, '->', lambada)
                 lowest_infeasible_top_bound = lambada
 
         if feasible and abs(n_images - max_images) < max_images/10. and abs(error - min_rmsd) < min_rmsd/10.:
@@ -244,7 +273,6 @@ def denoise(cv, max_images, min_rmsd, max_iter=20):
             # decrease params
             lambada = 0.5*(highest_feasible_bottom_bound + lambada)
 
-    print('final path is', path)
     return path
 
 #def screen(cv, lambadas=None):

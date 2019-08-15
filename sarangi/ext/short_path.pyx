@@ -32,9 +32,11 @@ def path(x, start, stop, param):
     if stop < 0 or stop >= T:
         raise ValueError('stop must be in the range of 0 to len(x)-1.')
     dijkstra_impl(start, stop, T, x.shape[1], &y[0, 0], &dist[0], &visited[0], &pred[0], param)
-    path = []
+    path = [stop]
     u = stop
     while pred[u] != -1:
-        u=pred[u]
+        u = pred[u]
         path.append(u)
-    return path[::-1] + [stop]
+    if path[-1] != start:
+        raise OverflowError('Cost computation yielded disconnected network. Try decreasing the exponential scaling parameter.')
+    return path[::-1]
