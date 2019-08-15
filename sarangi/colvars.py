@@ -76,7 +76,7 @@ class Colvars(object):
         return data
 
     @staticmethod
-    def load_colvar(fname, selection=All):
+    def load_colvar(fname, selection=All, ignore_step_column=True):
         'Load a colvars.traj file and convert to numpy recarray (with field names taken form the file header)'
         rows = []
         with open(fname) as f:
@@ -90,6 +90,13 @@ class Colvars(object):
         assert len(var_names) == len(dims)
         assert len(rows[0]) == sum(dims)
         data = np.array(rows[1:])  # ignore the zero'th row, since this is just the initial condition (in NAMD)
+
+        if var_names[0] == 'step':
+            if np.unique(data[:, 0]) != data.shape[1]:
+                warnings.warn('Colvar file %s contains repeated (non-unique) time steps. Proceed with caution.' % fname)
+
+        if ignore_step_column and var_names[0] == 'step':
+            data = data[:, 1:]  # delete first column
 
         if selection is None:
             selection = All
