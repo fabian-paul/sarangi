@@ -3,12 +3,12 @@ import argparse
 
 parser = argparse.ArgumentParser(description='Make new string by importing trajectory',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('--branch', nargs=1, required=True, help='Short label for the new string, e.g. \'AZ\'')
+parser.add_argument('--branch', required=True, help='Short label for the new string, e.g. \'AZ\'')
 parser.add_argument('--noswarm', action='store_true',
                     help='By default, propagate using the swarm of trajectories method. If set, use permanent biases (umbrella sampling).')
 parser.add_argument('--end', default=-1, type=int,
                     help='stop looking at the data past this frame (default=-1, use all frame)')
-parser.add_argument('--max_images', default=200, typ=int,
+parser.add_argument('--max_images', default=300, type=int,
                     help='New string will not contain more that this number of images.')
 parser.add_argument('--min_rmsd', default=0.3, type=float,
                     help='Stop adding images to the intial string, once the RMSD bottleneck reaches this value (in Angstrom).')
@@ -22,7 +22,9 @@ parser.add_argument('--fields', nargs='+', type=str, default=['All'],
                     help='Selection of collective variable names. If All is given, use all colvars that the command outputs.')
 parser.add_argument('--nocompress', action='store_true',
                     help='By default, import into the project only the frames that are needed for propagation. If set, import all data.')
-parser.add_argument('--nclusters', default=500000, type=int,
+parser.add_argument('--stride', type=int, default=1,
+                    help='Only cosider every n\'th frame in the input trajectory.') 
+parser.add_argument('--nclusters', default=50000, type=int,
                     help='Maximum number of input data points to use in path search. If input contains more points, reduce with k-means clustering.')
 parser.add_argument('trajname', nargs='+', type=str,
                     help='File name of the input trajectory. If more than one name is given, contents is concatenated (in the order of this list)')
@@ -41,7 +43,8 @@ if args.fields == ['All']:
 else:
     fields = args.fields
 
-import_trajectory(args.traj_name, args.branch, fields=fields, swarm=not args.noswarm, end=args.end, cvname=args.cvname,
-                  max_images=args.max_iamges, min_rmsd=args.min_rmsd, mother_string=mother_string, command=args.command,
+import_trajectory(args.trajname, args.branch, fields=fields, swarm=not args.noswarm, end=args.end, cvname=args.cvname,
+                  max_images=args.max_images, min_rmsd=args.min_rmsd, mother_string=mother_string, command=args.command,
                   compress=not args.nocompress, stride=args.stride, n_clusters=args.nclusters)
+
 
