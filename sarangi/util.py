@@ -53,7 +53,7 @@ def find(items, keys):
 
 def mkdir(folder):
     try:
-        os.mkdir(folder)
+        os.makedirs(folder)
     except OSError as e:
         if e.errno != errno.EEXIST:
             raise
