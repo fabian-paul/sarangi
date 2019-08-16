@@ -106,7 +106,7 @@ def collect_frames(fnames_traj_in, fname_traj_out, traj_idx_unordered, frame_idx
 
 
 def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, cvname='colvars', max_images=300, min_rmsd=0.3,
-           mother_string=None, command=None, compress=True, stride=1, n_clusters=50000):
+           mother_string=None, command=None, compress=True, stride=1, n_clusters=50000, lambada=None):
     r'''Import trajectory into Sarangi and turn it into a String object (make directory structure and plan file).
 
     Parameters
@@ -144,6 +144,9 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     n_clusters : int
         Reduce maximum number of input data points to this number by running k-means clustering.
         If the number of input data points is lower than this number, directly use all of them.
+    lambada : float or None
+        Exponential scaling parameter lambda for the shortest path algorithm. If given, will
+        override max_images and min_rmsd.
 
     Returns
     -------
@@ -174,7 +177,9 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     frame_indices = np.concatenate([np.arange(len(cv_traj))[::stride] for cv_traj in cv_trajs])[0:end]
     traj_indices = np.concatenate([np.zeros(len(cv_traj), dtype=int)[::stride] + i for i, cv_traj in enumerate(cv_trajs)])[0:end]
     #print('Indices of the all trajectories are:', np.unique(traj_indices))
-    cvs_linear = np.concatenate([cv_traj.as2D(fields=fields)[::stride] for cv_traj in cv_trajs])[0:end]
+    real_fields = cv_trajs[0].fields  # convert user selection (which may be All into a concrete list of field names)
+    del fields
+    cvs_linear = np.concatenate([cv_traj.as2D(fields=real_fields)[::stride] for cv_traj in cv_trajs])[0:end]
     #del cv_trajs
 
     if len(cvs_linear) > n_clusters:
@@ -190,7 +195,10 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
 
     # select images using subtropical shortest path algorithm
     print('finding connected path...')
-    image_indices_linear = denoise(cvs_linear, max_images=max_images, min_rmsd=min_rmsd)
+    if lambada is None:
+        image_indices_linear = denoise(cvs_linear, max_images=max_images, min_rmsd=min_rmsd)
+    else:
+        image_indices_linear, _ = denoise_once(cv=cvs_linear, lambada=lambada)
     #centers = cvs_linear[image_indices_linear, :]
     print('Length of path is %d. [%d, ..., %d]' % (len(image_indices_linear), image_indices_linear[0], image_indices_linear[-1]))
 
@@ -215,9 +223,9 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
         #fname_cv_out = '{root}/observables/{branch}_000/{cvname}/{branch}_000_000_000.npy'.format(root=util.root(), branch=branch, cvname=cvname)
         # TODO: should we overwrite ...
         # np.save(fname_cv_out, util.flat_to_structured(cvs_linear, fields=real_fields, dims=real_cv_dims))
-        print('checking self-consistecy of the imported coordinate data...')
+        print('checking self-consistecy of the imported (compressed) coordinate data...')
         # as a side effect the next line writes a collective variable file that corresponds to the starting structures into the project directory structure
-        ok = self_consistency_compressed(fname_traj_out, branch=branch, command=command, fields=fields, cvname=cvname, 
+        ok = self_consistency_compressed(fname_traj_out, branch=branch, command=command, fields=real_fields, cvname=cvname,
                  cv_centers_linear=cvs_linear[image_indices_linear], frame_indices=frame_indices[image_indices_linear], traj_indices=traj_indices[image_indices_linear])
         if ok:
             print('OK')
@@ -231,18 +239,26 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
                                     colvars_def=None, opaque={'observables': [{'command': command, 'name': cvname}]})
 
     # create String object / plan file
-    for running_index, index_linear in enumerate(image_indices_linear):
+    for running_index, image_index_linear in enumerate(image_indices_linear):
+        # get node in structured format; cv_trajs variable always refers to the original (uncompressed) format
+        i = frame_indices[image_index_linear]
+        node = cv_trajs[traj_indices[image_index_linear]]._colvars[i:i + 1]
         if compress:
-            frame_index = running_index  # just renumber sequentially
-            traj_index = 0
+            frame_index_out = running_index  # just renumber sequentially
+            traj_index_out = 0  # there is only one "trajectory" i.e. file with all input coordinates
         else:
-            frame_index = frame_indices[index_linear]
-            traj_index = traj_indices[index_linear]
-        node = cv_trajs[traj_index]._colvars[frame_index:frame_index + 1]
-        spring = util.load_structured({name: 10. for name in cv_trajs[traj_index].fields})
+            frame_index_out = frame_indices[image_index_linear]
+            traj_index_out = traj_indices[image_index_linear]
+        # test self-consistency of nodes
+        if not np.allclose(util.structured_to_flat(node, fields=real_fields), cvs_linear[image_index_linear, np.newaxis, :]):
+            #print(running_index, traj_index, )
+            print('structured:', util.structured_to_flat(node, fields=real_fields))
+            print('unstructured:', cvs_linear[image_index_linear, np.newaxis, :])
+            raise RuntimeError('The structured and the unstructured representations of the CV data became inconsistent. This should never happen. Stopping plan generation.')
+        spring = util.load_structured({name: 10. for name in real_fields})
         im = image.CompoundImage(image_id='{branch}_001_{index:03d}_000'.format(branch=branch, index=running_index),
-                                 previous_image_id='{branch}_000_000_{traj_index:03d}'.format(branch=branch, traj_index=traj_index),
-                                 previous_frame_number=frame_index, group_id=None, node=node, spring=spring, swarm=swarm)
+                                 previous_image_id='{branch}_000_000_{traj_index:03d}'.format(branch=branch, traj_index=traj_index_out),
+                                 previous_frame_number=frame_index_out, group_id=None, node=node, spring=spring, swarm=swarm)
         new_string.add_image(im)
     # save String object / plan file to disk
     time = datetime.datetime.strftime(datetime.datetime.now(), '%Y/%m/%d %I:%M')
@@ -269,7 +285,7 @@ def denoise_once(cv, lambada, geomf=None):
     Returns
     -------
     list of integers : [i1, i2, ...]
-/    indices such that [cv[i1, :], cv[i2, :], ...] are the denoised trajectory
+    indices such that [cv[i1, :], cv[i2, :], ...] are the denoised trajectory
     '''
     if geomf is None:
         geomf = (cv.shape[1]/3)**-0.5
@@ -283,6 +299,8 @@ def denoise_once(cv, lambada, geomf=None):
 
 
 def denoise(cv, max_images, min_rmsd, max_iter=8, verbose=True):
+    # TODO: rewrite this function: path length does not seem to depend monotonically on the scaling parameter
+    # this means that we cant 
     lambada = 1.0  # starting value
     lowest_infeasible_top_bound = 200.  # smallest upper bound on the parameter, such that the constraints are fulfilled
     highest_feasible_bottom_bound = 0.  # highest lower bound on the parameter in the infeasible region
@@ -290,7 +308,7 @@ def denoise(cv, max_images, min_rmsd, max_iter=8, verbose=True):
 
     for _ in range(max_iter):
         try:
-            path, jumps = denoise_once(cv, lambada)
+            path, jumps = denoise_once(cv=cv, lambada=lambada)
         except OverflowError:
             if verbose:
                 print('Network was disconnected by the wrong choice of a too large exponential scaling parameter.')

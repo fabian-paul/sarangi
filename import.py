@@ -26,6 +26,8 @@ parser.add_argument('--stride', type=int, default=1,
                     help='Only cosider every n\'th frame in the input trajectory.') 
 parser.add_argument('--nclusters', default=50000, type=int,
                     help='Maximum number of input data points to use in path search. If input contains more points, reduce with k-means clustering.')
+parser.add_argument('--lambada', default=None, type=float,
+                    help='Exponential scaling parameter for the shortest path algorithm. If given, will override max_images and min_rmsd.')
 parser.add_argument('trajname', nargs='+', type=str,
                     help='File name of the input trajectory. If more than one name is given, contents is concatenated (in the order of this list)')
 
@@ -45,6 +47,6 @@ else:
 
 import_trajectory(args.trajname, args.branch, fields=fields, swarm=not args.noswarm, end=args.end, cvname=args.cvname,
                   max_images=args.max_images, min_rmsd=args.min_rmsd, mother_string=mother_string, command=args.command,
-                  compress=not args.nocompress, stride=args.stride, n_clusters=args.nclusters)
+                  compress=not args.nocompress, stride=args.stride, n_clusters=args.nclusters, lambada=args.lambada)
 
 

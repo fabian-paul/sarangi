@@ -32,7 +32,7 @@ inline double calc_dist(const float * restrict a, const float * restrict b, size
 
 inline double log1mexp(double x) {
     /* Maechler, M. Accurately Computing log(1 - exp(- |a|)) Assessed by the Rmpfr package Cran, The Comprehensive R Archive Network. */
-    if (x <= M_LN2)
+    if (x <= 0.6931471805599453)
         return log(-expm1(-x));
     else
         return log1p(-exp(-x));
@@ -42,6 +42,8 @@ inline double calc_log_dist(const float * restrict a, const float * restrict b, 
     float sum = 0.;
     for(size_t i=0; i<n; i++) sum += (a[i]-b[i])*(a[i]-b[i]);
     double c = param*sqrt(sum);
+    /* The return value is log(exp(param*distance) - 1) where the purpose of the logarithm is to avoid overflows and being able to compare large values */
+    /* We use the indentity log(exp(x) - 1) = x + log(1 - exp(-x)) and several high-precision implementations of special functions to avoid numerical errors. */
     //return c + log(-expm1(-c));
     //double r = c + log1p(-exp(-c));
     double r = c + log1mexp(c);
