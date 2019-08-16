@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stddef.h>
 #include <signal.h>
+#include <assert.h>
 
 static volatile sig_atomic_t interrupted;
 static void (*old_handler)(int);
@@ -29,21 +30,44 @@ inline double calc_dist(const float * restrict a, const float * restrict b, size
     return expm1((double)(param*sqrt(sum)));
 }
 
+inline double log1mexp(double x) {
+    /* Maechler, M. Accurately Computing log(1 - exp(- |a|)) Assessed by the Rmpfr package Cran, The Comprehensive R Archive Network. */
+    if (x <= M_LN2)
+        return log(-expm1(-x));
+    else
+        return log1p(-exp(-x));
+}
+
 inline double calc_log_dist(const float * restrict a, const float * restrict b, size_t n, float param) {
     float sum = 0.;
     for(size_t i=0; i<n; i++) sum += (a[i]-b[i])*(a[i]-b[i]);
     double c = param*sqrt(sum);
     //return c + log(-expm1(-c));
-    return c + log1p(-exp(-c));
+    //double r = c + log1p(-exp(-c));
+    double r = c + log1mexp(c);
+    assert(r >= 0);
+    return r;
+}
+
+inline double log1pexp(double x) {
+    /* Maechler, M. Accurately Computing log(1 - exp(- |a|)) Assessed by the Rmpfr package Cran, The Comprehensive R Archive Network. */
+    if (x<=-37)
+        return exp(x);
+    else if (x<18)
+        return log1p(exp(x));
+    else if (x<33.3)
+        return x + exp(-x);
+    else
+        return x;
 }
 
 inline double log_add_exp(double a, double b) {
     //double c = fmaxf(a, b);
     //return c + log(exp(a - c) + exp(b - c));
     if (a > b)
-        return a + log1p(exp(b - a));
+        return a + log1pexp(b - a); // log1p(exp(b - a));
     else
-        return b + log1p(exp(a - b));
+        return b + log1pexp(a - b); // log1p(exp(a - b));
 }
 
 void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * restrict x, double * restrict dist, char * restrict visited, int * restrict pred, float param) {
@@ -63,9 +87,10 @@ void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * 
             if(!visited[v]) {
                 /*double d = calc_dist(&x[u*n], &x[v*n], n, param);*/
                 double d = calc_log_dist(&x[u*n], &x[v*n], n, param);
-                if(d + dist[u] < dist[v]) {
+                double q = log_add_exp(d, dist[u]);
+                if(q < dist[v]) {
                     /*dist[v] = d + dist[u];*/
-                    dist[v] = log_add_exp(d, dist[u]);
+                    dist[v] = q;
                     pred[v] = u;
                  }
              }
