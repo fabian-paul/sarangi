@@ -51,7 +51,7 @@ def main_update(image_id=None, ignore_colvar_traj=False, iteration=None):
         if iteration is None:
             string = load()  # load highest iteration of the string
         else:
-            string = String.load(branch='XCsw', iteration=iteration)
+            string = String.load(branch='XHDsw', iteration=iteration)
 
     observables = string.opaque['observables']
 

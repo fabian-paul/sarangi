@@ -298,7 +298,7 @@ def denoise_once(cv, lambada, geomf=None):
     return path, jumps
 
 
-def gss(f, a, b, tol=1e-2, goal=float('-inf'), max_iter=float('inf')):
+def gss(f, a, b, tol=1e-3, goal=float('-inf'), max_iter=float('inf'), verbose=False):
     'Minimize the function given by f(x)[0] under the condition f(x)[1].'
     import math
     hist_x = []
@@ -312,14 +312,21 @@ def gss(f, a, b, tol=1e-2, goal=float('-inf'), max_iter=float('inf')):
     fd, cond_d, aux_d = f(d)
     iter_ = 0
     while abs(fc - fd) > tol or not (cond_c or cond_d):
-        fc, cond_c, aux_c = f(c)
-        fd, cond_d, aux_d = f(d)
+        fc, cond_c, aux_c = f(c)  # TODO: move down
+        fd, cond_d, aux_d = f(d)  # TODO: move down
         if fc <= goal and cond_c:
+            print('Reached precision goal.')
             return c, aux_c, hist_x, hist_f, hist_cond, hist_aux
         if fd <= goal and cond_d:
+            print('Reached precision goal.')
             return d, aux_d, hist_x, hist_f, hist_cont, hist_aux
-        # this is the golden scection algorithm with a single modification:
-        if fc < fd or not cond_d:  # the "or not z_cond" expression is the modification
+        # This is the golden section algorithm with a single modification:
+        # For large x, we will typically violate the constraint. The
+        # violation can be resolved by decreasing x. Therefore we select
+        # the left interval, if the point in the middle of the right interval
+        # is infeasible. That's all. No such reasoning is needed for violations
+        # in the left interval, since we always go further left.
+        if fc < fd or not cond_d:  # the "or not cond_d" expression is the modification
             b = d
             hist_x.append(d)
             hist_f.append(fd)
@@ -338,7 +345,15 @@ def gss(f, a, b, tol=1e-2, goal=float('-inf'), max_iter=float('inf')):
         c = b - (b - a) / gr
         d = a + (b - a) / gr
         iter_ += 1
-    
+
+    if iter_ > max_iter:
+        print('Reached maximum number of iterations.')
+    else:
+        if cond_c and not cond_d:
+            print('Converged to the constraint boundary.')
+        else:
+            print('Found minimum off the constraint boundary.')
+
     if (fc < fd and cond_c and cond_d) or (cond_c and not cond_d):
         return c, aux_c, hist_x, hist_f, hist_cond, hist_aux
     else:
@@ -355,7 +370,15 @@ def denoise(cv, max_images=200, min_rmsd=0.1, max_iter=float('inf'), verbose=Tru
         if verbose:
             print('Path optimzation with parameter %f produced an average rmsd of %f and path length of %d.'%(x, score, len(p)))
         return score, cond, p
-    l, result, _, _, _, _ = gss(f_, 0.05, 200, goal=min_rmsd, max_iter=max_iter)
+    mem = {}  # TODO: implement better solution
+    def f_memoized(x):
+        if x in mem:
+            return mem[x]
+        else:
+            y = f_(x)
+            mem[x] = y
+            return y
+    l, result, _, _, _, _ = gss(f_memoized, 0.05, 200, goal=min_rmsd, max_iter=max_iter, verbose=verbose)
     return result
 
 
