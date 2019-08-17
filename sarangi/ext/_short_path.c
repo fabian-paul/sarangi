@@ -72,7 +72,7 @@ inline double log_add_exp(double a, double b) {
         return b + log1pexp(a - b); // log1p(exp(a - b));
 }
 
-void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * restrict x, double * restrict dist, char * restrict visited, int * restrict pred, float param) {
+void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * restrict x, double * restrict dist, char * restrict visited, int * restrict pred, float param, int logspace) {
     sigint_on();
     for(size_t i = 0; i < T; i++) { pred[i] = -1; dist[i]=INFINITY; visited[i]=0; }
     dist[start] = 0.;
@@ -87,9 +87,15 @@ void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * 
 
         for(size_t v=0; v<T; v++) {
             if(!visited[v]) {
+                double q;
                 /*double d = calc_dist(&x[u*n], &x[v*n], n, param);*/
-                double d = calc_log_dist(&x[u*n], &x[v*n], n, param);
-                double q = log_add_exp(d, dist[u]);
+                if (logspace) {
+                    double d = calc_log_dist(&x[u*n], &x[v*n], n, param);
+                    q = log_add_exp(d, dist[u]);
+                } else {
+                    double d = calc_dist(&x[u*n], &x[v*n], n, param);
+                    q = d + dist[u];
+                };
                 if(q < dist[v]) {
                     /*dist[v] = d + dist[u];*/
                     dist[v] = q;

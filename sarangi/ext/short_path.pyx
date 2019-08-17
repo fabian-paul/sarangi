@@ -1,10 +1,10 @@
 cdef extern from "_short_path.h":
-    void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * x, double * dist, char * visited, int * pred, float param);
+    void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * x, double * dist, char * visited, int * pred, float param, int logspace);
 
 import numpy as np
 cimport numpy as np
 
-def path(x, start, stop, param):
+def path(x, start, stop, param, logspace=True):
     r'''Compute the shortest path through data points using Dijkstra's algorithm.
 
     Paramaters
@@ -31,7 +31,11 @@ def path(x, start, stop, param):
         raise ValueError('start must be in the range of 0 to len(x)-1.')
     if stop < 0 or stop >= T:
         raise ValueError('stop must be in the range of 0 to len(x)-1.')
-    dijkstra_impl(start, stop, T, x.shape[1], &y[0, 0], &dist[0], &visited[0], &pred[0], param)
+    if logspace:
+        logspace_ = 1
+    else:
+        logspace_ = 0
+    dijkstra_impl(start, stop, T, x.shape[1], &y[0, 0], &dist[0], &visited[0], &pred[0], param, logspace_)
     path = [stop]
     u = stop
     while pred[u] != -1:
