@@ -298,7 +298,68 @@ def denoise_once(cv, lambada, geomf=None):
     return path, jumps
 
 
-def denoise(cv, max_images, min_rmsd, max_iter=8, verbose=True):
+def gss(f, a, b, tol=1e-2, goal=float('-inf'), max_iter=float('inf')):
+    'Minimize the function given by f(x)[0] under the condition f(x)[1].'
+    import math
+    hist_x = []
+    hist_f = []
+    hist_cond = []
+    hist_aux = []
+    gr = (math.sqrt(5) + 1) / 2
+    c = b - (b - a) / gr
+    d = a + (b - a) / gr
+    fc, cond_c, aux_c = f(c)
+    fd, cond_d, aux_d = f(d)
+    iter_ = 0
+    while abs(fc - fd) > tol or not (cond_c or cond_d):
+        fc, cond_c, aux_c = f(c)
+        fd, cond_d, aux_d = f(d)
+        if fc <= goal and cond_c:
+            return c, aux_c, hist_x, hist_f, hist_cond, hist_aux
+        if fd <= goal and cond_d:
+            return d, aux_d, hist_x, hist_f, hist_cont, hist_aux
+        # this is the golden scection algorithm with a single modification:
+        if fc < fd or not cond_d:  # the "or not z_cond" expression is the modification
+            b = d
+            hist_x.append(d)
+            hist_f.append(fd)
+            hist_cond.append(cond_d)
+            hist_aux.append(aux_d)
+        else:
+            a = c
+            hist_x.append(c)
+            hist_f.append(fc)
+            hist_cond.append(cond_c)
+            hist_aux.append(aux_c)
+
+        if iter_ > max_iter:
+            break
+
+        c = b - (b - a) / gr
+        d = a + (b - a) / gr
+        iter_ += 1
+    
+    if (fc < fd and cond_c and cond_d) or (cond_c and not cond_d):
+        return c, aux_c, hist_x, hist_f, hist_cond, hist_aux
+    else:
+        return d, aux_d, hist_x, hist_f, hist_cond, hist_aux
+
+
+def denoise(cv, max_images=200, min_rmsd=0.1, max_iter=float('inf'), verbose=True):
+    def f_(x):
+        geomf = (cv.shape[1]/3.)**-0.5
+        p = shortest_path(cv, 0, cv.shape[0] - 1, x*geomf, logspace=True)
+        delta = [np.linalg.norm(cv[i, :] - cv[j, :]) for i, j in zip(p[0:-1], p[1:])]
+        score = np.mean(delta)*geomf
+        cond = (len(p) < max_images)
+        if verbose:
+            print('Path optimzation with parameter %f produced an average rmsd of %f and path length of %d.'%(x, score, len(p)))
+        return score, cond, p
+    l, result, _, _, _, _ = gss(f_, 0.05, 200, goal=min_rmsd, max_iter=max_iter)
+    return result
+
+
+def denoise2(cv, max_images, min_rmsd, max_iter=8, verbose=True):
     # TODO: rewrite this function: path length does not seem to depend monotonically on the scaling parameter
     # this means that we cant 
     lambada = 1.0  # starting value
