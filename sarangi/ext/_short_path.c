@@ -27,7 +27,10 @@ inline double calc_dist(const float * restrict a, const float * restrict b, size
     float sum = 0.;
     for(size_t i=0; i<n; i++) sum += (a[i]-b[i])*(a[i]-b[i]);
     /* return exp((double)(param*sqrt(sum))) - 1.; */
-    return expm1((double)(param*sqrt(sum)));
+    if (isinf(param))
+        return sqrt(sum);
+    else
+        return expm1((double)(param*sqrt(sum)));
 }
 
 inline double log1mexp(double x) {
@@ -89,7 +92,10 @@ void dijkstra_impl(size_t start, size_t stop, size_t T, size_t n, const float * 
             if(!visited[v]) {
                 double q;
                 /*double d = calc_dist(&x[u*n], &x[v*n], n, param);*/
-                if (logspace) {
+                if (isinf(param)) {
+                    double d = calc_dist(&x[u*n], &x[v*n], n, param);
+                    q = fmax(d, dist[u]);
+                } else if (logspace) {
                     double d = calc_log_dist(&x[u*n], &x[v*n], n, param);
                     q = log_add_exp(d, dist[u]);
                 } else {
