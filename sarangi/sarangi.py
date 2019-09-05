@@ -611,7 +611,7 @@ class String(object):
         'Create a String object by recovering the information form the yaml file whose path is given as the argument.'
         with open(fname) as f:
             config = yaml.load(f, Loader=yaml.SafeLoader)
-        string = config['strings'][0]
+        string = config['strings'][0]  # TODO: in the future, support multiple strings per file (possibly different iterations?)
         colvars_def = string['colvars'] if 'colvars' in string else None
         branch = string['branch']
         iteration = string['iteration']
@@ -619,6 +619,7 @@ class String(object):
         images_arr = [load_image(config=img_cfg, colvars_def=colvars_def) for img_cfg in string['images']]
         images = {image.seq: image for image in images_arr}
         opaque = {key: config[key] for key in config.keys() if key not in ['strings']}  # TODO: currently opaque refers to things outside of the string, also handle information inside
+        # TODO: issue a warning, if we are potentially discarding opaque fields in the string...
         return String(branch=branch, iteration=iteration, images=images, image_distance=image_distance, previous=None,
                       opaque=opaque, colvars_def=colvars_def)
 
@@ -1250,18 +1251,23 @@ def parse_commandline(argv=None):
 #    String.from_scratch(image_distance=image_distance).write_yaml()
 
 
-def load(branch='AZ', offset=0):
+def load(branch='AZ', offset=-1):
     'Find the latest iteration of the string in $STRING_SIM_ROOT/strings/ and recover it from the yaml file.'
+    if offset >= 0:
+        raise ValueError('offset can\'t be zero or positive.')
     folder = root() + '/strings/'
-    iteration = -1
+    iteration = None
     for entry in os.listdir(folder):
         splinters = entry.split('_')
         if len(splinters) == 2:
             folder_branch, folder_iteration = splinters 
             if folder_branch == branch and folder_iteration.isdigit():
                 iteration = max([iteration, int(folder_iteration)])
-    print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + offset))
-    return String.load(branch=branch, iteration=iteration + offset)
+    if iteration is not None:
+        print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + 1 + offset))
+        return String.load(branch=branch, iteration=iteration + offset)
+    else:
+        raise RuntimeError('No string with branch identifier "%s" found' % branch)
 
 
 #def list_branches():
@@ -1279,7 +1285,9 @@ def main(argv=None):
     options = parse_commandline(argv)
 
     if options['iteration'] is None:
-        string = load(branch=options['branch'])
+        string = load(branch=options['branch'])  # TODO: refactor loading functions such that this becomes one function
+    elif options['iteration'] < 0:
+        string = load(branch=options['branch'], offset=options['iteration'])
     else:
         string = String.load(branch=options['branch'], iteration=options['iteration'])
     print(string.branch, string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
