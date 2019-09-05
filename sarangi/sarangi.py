@@ -1256,16 +1256,16 @@ def load(branch='AZ', offset=-1):
     if offset >= 0:
         raise ValueError('offset can\'t be zero or positive.')
     folder = root() + '/strings/'
-    iteration = None
+    iteration = float('-inf')
     for entry in os.listdir(folder):
         splinters = entry.split('_')
         if len(splinters) == 2:
             folder_branch, folder_iteration = splinters 
             if folder_branch == branch and folder_iteration.isdigit():
                 iteration = max([iteration, int(folder_iteration)])
-    if iteration is not None:
+    if iteration > float('-inf'):
         print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + 1 + offset))
-        return String.load(branch=branch, iteration=iteration + offset)
+        return String.load(branch=branch, iteration=iteration + 1 + offset)
     else:
         raise RuntimeError('No string with branch identifier "%s" found' % branch)
 
