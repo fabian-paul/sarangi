@@ -86,7 +86,7 @@ def _process_trajectory(trajectory_fname, image, sim_root, command, observable_n
         print('checking', fname_base_out, end=' ')
         if os.path.exists(fname_base_out + '.npy') or os.path.exists(fname_base_out + '.pdb') or (
                 os.path.exists(fname_base_out + '.colvars.traj') and not ignore_colvars_traj) \
-                or os.path.exists(fname_base_out + '.pdb'):
+                or os.path.exists(fname_base_out + '.pdb.gz'):
             print('exist. OK.')
         else:
             print('not found; making file')
