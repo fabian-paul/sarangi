@@ -110,6 +110,7 @@ def main_update(image_id=None, branch=None, iteration=None, ignore_colvars_traj=
     sim_root = root()
     if image_id is not None:
         branch, iteration, _, _ = image_id.split('_')
+        iteration = int(iteration)
         string = String.load(branch=branch, iteration=iteration)
     else:
         if iteration < 0:  # TODO: refactor loading
