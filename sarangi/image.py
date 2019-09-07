@@ -15,7 +15,7 @@ def interpolate_id(s, z, excluded):
     excluded_int = []
     for id_ in excluded:
         _, _, a, b = id_.split('_')
-        excluded_int.append(int(a + b))
+        excluded_int.append(int(a + b))  # represent as six-digit integers  # TODO: make sure that's really six digits...
 
     branch, iter_, a, b = s.split('_')
     _, _, c, d = z.split('_')
@@ -28,6 +28,8 @@ def interpolate_id(s, z, excluded):
     # print('searching', upper, lower)
     if not result:
         raise RuntimeError('Could not generate an unique id.')
+    if not lower < result < upper:
+        raise RuntimeError('interpolate_id experienced an internal error, please call you family mathematician')
     return '%s_%03s_%03d_%03d' % (branch, iter_, result // 1000, result % 1000)
 
 
@@ -267,7 +269,7 @@ class Image(object):
 
     def colvars(self, subdir='colvars', fields=All, memoize=True):
         'Return Colvars object for the set of collective variables saved in a given subdir and limited to given fields'
-        if not isinstance(fields, AllType) and (subdir, tuple(fields)) in self._colvars:
+        if not isinstance(fields, AllType) and (subdir, tuple(fields)) in self._colvars:  # return memoized data if we have it
             return self._colvars[(subdir, tuple(fields))]
         else:
             folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
