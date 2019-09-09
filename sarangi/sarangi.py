@@ -284,7 +284,7 @@ class String(object):
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
-    def bisect_at(self, i, j=None, subdir='colvars', where='node', search='string', fields=All):
+    def bisect_at(self, i, j=None, subdir='colvars', where='node', search='string'):
         r'''Create new image half-way between images i and j.
 
         example
@@ -331,9 +331,11 @@ class String(object):
         else:
             raise ValueError('Unrecognized value "%s" for option "where"' % where)
 
+        real_fields = p.fields  # use same cvs as node of p
+
         if search == 'points':
-            query_p = p.colvars(subdir=subdir, fields=fields).closest_point(x)
-            query_q = q.colvars(subdir=subdir, fields=fields).closest_point(x)
+            query_p = p.colvars(subdir=subdir, fields=real_fields).closest_point(x)
+            query_q = q.colvars(subdir=subdir, fields=real_fields).closest_point(x)
             if query_p['d'] < query_q['d']:
                 print('best distance is', query_p['d'])
                 best_image = p
@@ -347,7 +349,7 @@ class String(object):
             responses = []
             for im in self.images.values():
                 try:
-                    responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(x)))
+                    responses.append((im, im.colvars(subdir=subdir, fields=real_fields).closest_point(x)))
                 except FileNotFoundError as e:
                     warnings.warn(str(e))
             best_idx = np.argmin([r[1]['d'] for r in responses])
