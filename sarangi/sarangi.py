@@ -284,7 +284,7 @@ class String(object):
             raise RuntimeError('Trying to find connectedness of string that has not been (fully) propagated. Giving up.')
         return all(p.overlap_plane(q) >= threshold for p, q in zip(self.images_ordered[0:-1], self.images_ordered[1:]))
 
-    def bisect_at(self, i, j=None, subdir='colvars', where='node', search='string', fields=All):
+    def bisect_at(self, i, j=None, subdir='colvars', where='node', search='string'):
         r'''Create new image half-way between images i and j.
 
         example
@@ -331,9 +331,11 @@ class String(object):
         else:
             raise ValueError('Unrecognized value "%s" for option "where"' % where)
 
+        real_fields = p.fields  # use same cvs as node of p
+
         if search == 'points':
-            query_p = p.colvars(subdir=subdir, fields=fields).closest_point(x)
-            query_q = q.colvars(subdir=subdir, fields=fields).closest_point(x)
+            query_p = p.colvars(subdir=subdir, fields=real_fields).closest_point(x)
+            query_q = q.colvars(subdir=subdir, fields=real_fields).closest_point(x)
             if query_p['d'] < query_q['d']:
                 print('best distance is', query_p['d'])
                 best_image = p
@@ -347,7 +349,7 @@ class String(object):
             responses = []
             for im in self.images.values():
                 try:
-                    responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(x)))
+                    responses.append((im, im.colvars(subdir=subdir, fields=real_fields).closest_point(x)))
                 except FileNotFoundError as e:
                     warnings.warn(str(e))
             best_idx = np.argmin([r[1]['d'] for r in responses])
@@ -611,7 +613,7 @@ class String(object):
         'Create a String object by recovering the information form the yaml file whose path is given as the argument.'
         with open(fname) as f:
             config = yaml.load(f, Loader=yaml.SafeLoader)
-        string = config['strings'][0]
+        string = config['strings'][0]  # TODO: in the future, support multiple strings per file (possibly different iterations?)
         colvars_def = string['colvars'] if 'colvars' in string else None
         branch = string['branch']
         iteration = string['iteration']
@@ -619,6 +621,7 @@ class String(object):
         images_arr = [load_image(config=img_cfg, colvars_def=colvars_def) for img_cfg in string['images']]
         images = {image.seq: image for image in images_arr}
         opaque = {key: config[key] for key in config.keys() if key not in ['strings']}  # TODO: currently opaque refers to things outside of the string, also handle information inside
+        # TODO: issue a warning, if we are potentially discarding opaque fields in the string...
         return String(branch=branch, iteration=iteration, images=images, image_distance=image_distance, previous=None,
                       opaque=opaque, colvars_def=colvars_def)
 
@@ -1250,18 +1253,23 @@ def parse_commandline(argv=None):
 #    String.from_scratch(image_distance=image_distance).write_yaml()
 
 
-def load(branch='AZ', offset=0):
+def load(branch='AZ', offset=-1):
     'Find the latest iteration of the string in $STRING_SIM_ROOT/strings/ and recover it from the yaml file.'
+    if offset >= 0:
+        raise ValueError('offset can\'t be zero or positive.')
     folder = root() + '/strings/'
-    iteration = -1
+    iteration = float('-inf')
     for entry in os.listdir(folder):
         splinters = entry.split('_')
         if len(splinters) == 2:
             folder_branch, folder_iteration = splinters 
             if folder_branch == branch and folder_iteration.isdigit():
                 iteration = max([iteration, int(folder_iteration)])
-    print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + offset))
-    return String.load(branch=branch, iteration=iteration + offset)
+    if iteration > float('-inf'):
+        print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + 1 + offset))
+        return String.load(branch=branch, iteration=iteration + 1 + offset)
+    else:
+        raise RuntimeError('No string with branch identifier "%s" found' % branch)
 
 
 #def list_branches():
@@ -1279,7 +1287,9 @@ def main(argv=None):
     options = parse_commandline(argv)
 
     if options['iteration'] is None:
-        string = load(branch=options['branch'])
+        string = load(branch=options['branch'])  # TODO: refactor loading functions such that this becomes one function
+    elif options['iteration'] < 0:
+        string = load(branch=options['branch'], offset=options['iteration'])
     else:
         string = String.load(branch=options['branch'], iteration=options['iteration'])
     print(string.branch, string.iteration, ':', string.ribbon(run_locally=options['run_locally']))

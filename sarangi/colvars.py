@@ -8,7 +8,7 @@ __all__ = ['Colvars']
 
 class Colvars(object):
     # TODO: should we unify this with Pyemma?
-    def __init__(self, folder, base, fields=All):
+    def __init__(self, folder, base, fields=All, ignore_step_column=True):
         'Load file from folder/base(.npy|.colvars.traj|.pdb)'
         self._mean = None
         #self._var = None
@@ -20,7 +20,8 @@ class Colvars(object):
             if not isinstance(fields, AllType):
                 self._colvars = self._colvars[fields]
         elif os.path.exists(fname + '.colvars.traj'):
-            self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields)
+            self._colvars = Colvars.load_colvar(fname + '.colvars.traj', selection=fields,
+                                                ignore_step_column=ignore_step_column)
             self._type = 'colvars.traj'
         elif os.path.exists(fname + '.pdb'):
             self._colvars = Colvars.load_pdb_traj(fname + '.pdb', selection=fields)
@@ -92,11 +93,13 @@ class Colvars(object):
         data = np.array(rows[1:])  # ignore the zero'th row, since this is just the initial condition (in NAMD)
 
         if var_names[0] == 'step':
-            if np.unique(data[:, 0]) != data.shape[1]:
+            if len(np.unique(data[:, 0])) != data.shape[0]:
                 warnings.warn('Colvar file %s contains repeated (non-unique) time steps. Proceed with caution.' % fname)
 
         if ignore_step_column and var_names[0] == 'step':
             data = data[:, 1:]  # delete first column
+            var_names = var_names[1:]
+            dims = dims[1:]
 
         if selection is None:
             selection = All

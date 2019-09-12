@@ -1,7 +1,3 @@
-import sys
-from sarangi.observables import main_update
+from sarangi.observables import main_update, parse_args_update
 
-if len(sys.argv) > 1:
-    main_update(image_id=sys.argv[1])
-else:
-    main_update()
+main_update(**parse_args_update())
