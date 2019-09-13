@@ -287,6 +287,23 @@ class String(object):
     def bisect_at(self, i, j=None, subdir='colvars', where='node', search='string'):
         r'''Create new image half-way between images i and j.
 
+        Parameters
+        ----------
+        i : int or float
+            Identifies the first image in the pair. If int, pick self.images_ordered[i] as the first,
+            if float, pick self[i] as the first image (interpret the float as major.minor)
+        j : int or float or None
+            Like j. If None, assume j =  i + 1
+        subdirs : str
+            Subfolder where to search for colvars. Used to find images that are close in CV space.
+        where : str
+            One of 'mean', 'x0', or 'node'. Select which property of images to interpolate to find the midpoint.
+        search : str
+            One of 'points' or 'string'. Where to search for realized frames that are close to the midpoint.
+            'string' searches in the whole string, 'points' searches only among the swarm data of images i and j.
+        fields : iterable or All
+            What do consider as the collective variable space. Default All,
+
         example
         -------
             ov, ids = string.overlap(return_ids=True)
@@ -367,7 +384,7 @@ class String(object):
                                          previous_frame_number=best_step, node=x, spring=p.spring.copy(), group_id=None,
                                          swarm=best_image.swarm)
         # TODO: for linear bias, where to put the terminal (just the next node along the string)
-        # TODO: or should we use some interpolation to control the distance between node and termimal?
+        # TODO: or should we use some interpolation to control the distance between node and terminal?
 
         #   self.images[new_image.seq] = new_image
         return new_image
@@ -383,6 +400,8 @@ class String(object):
             self.add_image(new_image)
         if write:
             self.write_yaml(message='bisected at positions of low overlap')
+
+    interpolate = bisect
 
     def bisect_and_propagate_util_connected(self, run_locally=False):
         s = self
@@ -470,12 +489,16 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000, default_flow_style=None)  # default_flow_style=False,
 
-    def evolve(self, subdir='colvars', fields=All, rmsd=False, linear_bias=0, swarm=None, do_smooth=False):
+    def evolve(self, subdir='colvars', reparametrize=True, rmsd=False, linear_bias=0, swarm=None, do_smooth=False):
         '''Created a copy of the String where the images are evolved and the string is reparametrized to have equidistant images.
 
            Parameters
            ----------
-           rmsd: boolean
+           reparametrize : bool
+                Reparamtrized the new string such that images are equidistant in collective
+                variable space.
+
+           rmsd: bool
                during reparametrization, image distance is measured with the RMSD metric that
                takes into account the number of atoms as apposed to the Euclidean matric
                (rmsd=False) that does not normalize by the number of atoms. Affects how
@@ -524,23 +547,25 @@ class String(object):
             current_means = smooth(np.array(current_means), do_smooth)
 
         # do the string reparametrization
-        ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
-        nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
+        if reparametrize:
+            ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
+            nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
                                             d_skip=self.image_distance * n_atoms**0.5 / 2)
-
-        # do some self-consistency tests
-        eps = 1E-6
-        # check distances
-        for i, (a, b) in enumerate(zip(nodes[0:-1], nodes[1:])):
-            delta = np.linalg.norm(a - b)
-            if delta > self.image_distance * n_atoms ** 0.5 + eps \
-                    or (delta < self.image_distance * n_atoms ** 0.5 - eps and i != len(nodes) - 2):
-                warnings.warn('Reparametrization failed at new nodes %d and %d (distance %f)' % (i, i + 1, delta))
-        # check order
-        for i in range(len(nodes) - 1):
-            if np.argmin(np.linalg.norm(nodes[i, np.newaxis, :] - nodes[i + 1:, :], axis=1)) != 0:
-                warnings.warn('Reparametrization did not yield an ordered string.')
-        # end of self-consistency test
+            # do some self-consistency tests
+            eps = 1E-6
+            # check distances
+            for i, (a, b) in enumerate(zip(nodes[0:-1], nodes[1:])):
+                delta = np.linalg.norm(a - b)
+                if delta > self.image_distance * n_atoms ** 0.5 + eps \
+                        or (delta < self.image_distance * n_atoms ** 0.5 - eps and i != len(nodes) - 2):
+                    warnings.warn('Reparametrization failed at new nodes %d and %d (distance %f)' % (i, i + 1, delta))
+            # check order
+            for i in range(len(nodes) - 1):
+                if np.argmin(np.linalg.norm(nodes[i, np.newaxis, :] - nodes[i + 1:, :], axis=1)) != 0:
+                    warnings.warn('Reparametrization did not yield an ordered string.')
+            # end of self-consistency test
+        else:
+            nodes = current_means
 
         iteration = self.iteration + 1
         new_string = self.empty_copy(iteration=iteration, previous=self)
@@ -692,7 +717,7 @@ class String(object):
                 warnings.warn(str(e))
         return -np.cumsum(f), deltaf, mbar
 
-    def arclength_projections(self, subdir='colvars', order=1, x0=False, curve_defining_string=None):
+    def arclength_projections(self, subdir='colvars', order=1, x0=False, curve_defining_string=None, where='nodes', defining_subdir='colvars'):
         r'''For all frames in all simulations, compute the arc length order parameter.
 
         Parameters
@@ -709,6 +734,12 @@ class String(object):
         curve_defining_string: String object, default=self
             Images of this string define the curve through CV space onto which the images
             in self are projected.
+        where: str
+            One of 'nodes' or 'means'. Whether to use the means or the nodes from
+            curve_defining_string to define the curve through collective variable space.
+        defining_subdir: str
+            One used if `where=="nodes"`. Where to find the collective variables to
+            compute the means.
 
         Notes
         -----
@@ -728,9 +759,16 @@ class String(object):
         if curve_defining_string is None:
             curve_defining_string = self
         fields = curve_defining_string.images_ordered[0].fields
-        support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in
-                          curve_defining_string.images_ordered]
+        if where == 'nodes':
+            support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in
+                              curve_defining_string.images_ordered]
+        elif where == 'means':
+            support_points = [image.colvars(subdir=defining_subdir, fields=fields).mean.as2D(fields=fields)[0, :]
+                              for image in curve_defining_string.images_ordered]
+        else:
+            raise ValueError('where must be one of "nodes" or "means"')
         # remove duplicate points https://stackoverflow.com/questions/16970982/find-unique-rows-in-numpy-array
+        # TODO: allow for some epsilon parameter!
         x = []
         for r in support_points:
             if tuple(r) not in x:
@@ -908,7 +946,6 @@ class String(object):
 
         return mbar, xaxis
 
-
     @staticmethod
     def overlap_gaps(matrix, threshold=0.99):
         'Indentify the major gaps in the (thermodynamic) overlap matrix'
@@ -926,6 +963,7 @@ class String(object):
         return msmtools.analysis.pcca(T, m)
 
     def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
+        'Compute displacement vector in collective variable space for each image.'
         drift = {}
         for seq, im in self.images.items():
             try:
@@ -1012,7 +1050,7 @@ class String(object):
                 print('Node %d is not closest to its neighbors according to ordering by ID. Clostest node is %d.' % (
                 i, top1))
 
-    def count_matrix(self, return_t=False, f=1.0, subdir_init='colvars_init', order=0, curve_defining_string=None):
+    def count_matrix(self, return_t=False, f=1.0, subdir_init='colvars_init', order=0, curve_defining_string=None, clusters='nodes', defining_subdir='colvars'):
         r'''Estimate MSM from swarm of trajectories data
 
             Parameters
@@ -1033,6 +1071,13 @@ class String(object):
                 string object that contains nodes to use as cluster centers / or for arc length computation
                 by default this is set to self
 
+            clusters : str
+                One of 'nodes' or 'means'. Where to place the cluster centers of the microstates.
+                # TODO: add multistate SVM as an extra option
+
+            defining_subdir : str
+                Only used if `clusters=="means"`. Where to find the colvars to compute the means.
+
             Returns
             -------
             count_matrix: ndarray
@@ -1051,9 +1096,11 @@ class String(object):
         #    s_starts_images = np.maximum(self.arclength_projections(x0=True), 0.)
         #else:
         s_starts_images = self.arclength_projections(subdir=subdir_init, x0=False, order=order,
-                                                     curve_defining_string=curve_defining_string)
+                                                     curve_defining_string=curve_defining_string, where=clusters,
+                                                     defining_subdir=defining_subdir)
         s_starts_images = np.maximum(s_starts_images, 0.)
-        s_ends_images = self.arclength_projections(x0=False, order=order, curve_defining_string=curve_defining_string)
+        s_ends_images = self.arclength_projections(x0=False, order=order, curve_defining_string=curve_defining_string,
+                                                   defining_subdir=defining_subdir)
         s_ends_images = np.maximum(s_ends_images, 0.)
         for s_starts, s_ends in zip(s_starts_images, s_ends_images):
             for s_start, s_end in zip(s_starts, s_ends):
