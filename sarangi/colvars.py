@@ -1,9 +1,47 @@
 import numpy as np
 import os
 import warnings
-from .util import All, AllType, structured_to_flat, length_along_segment
+from .util import All, AllType, structured_to_flat, length_along_segment, exactly_2d, recarray_dims
 
 __all__ = ['Colvars']
+
+# TODO: this could be parallelized over the different pairs of images
+def overlap_svm(X_self, X_other, indicator='max', return_classifier=False):
+    import sklearn.svm
+    X_self = exactly_2d(X_self)
+    X_other = exactly_2d(X_other)
+    X = np.vstack((X_self, X_other))
+    n_self = X_self.shape[0]
+    n_other = X_other.shape[0]
+    labels = np.zeros(n_self + n_other, dtype=int)
+    labels[n_self:] = 1
+    mean = np.mean(X, axis=0)
+    std = np.maximum(np.std(X, axis=0), 1.E-6)
+    clf = sklearn.svm.LinearSVC(max_iter=10000)
+    clf.fit((X - mean) / std, labels)
+    c = np.zeros((2, 2), dtype=int)
+    p_self = clf.predict((X_self - mean) / std)
+    p_other = clf.predict((X_other - mean) / std)
+    c[0, 0] = np.count_nonzero(p_self == 0)
+    c[0, 1] = np.count_nonzero(p_self == 1)
+    c[1, 0] = np.count_nonzero(p_other == 0)
+    c[1, 1] = np.count_nonzero(p_other == 1)
+    c_sum = c.sum(axis=1)
+    c_norm = c / c_sum[:, np.newaxis]
+    if indicator == 'max':
+        return_value = max(c_norm[0, 1], c_norm[1, 0])
+    elif indicator == 'min':
+        return_value = min(c_norm[0, 1], c_norm[1, 0])
+    elif indicator == 'down':
+        return_value = c_norm[1, 0]  # other -> self
+    elif indicator == 'up':
+        return_value = c_norm[0, 1]  # self -> other
+    else:
+        return_value = c_norm
+    if return_classifier:
+        return return_value, clf
+    else:
+        return return_value
 
 
 class Colvars(object):
@@ -138,13 +176,13 @@ class Colvars(object):
                 self._mean = np.zeros(1, pcoords.dtype)
                 mean_flat = np.zeros(sum(self.dims))
                 k = 0
-                for n in pcoords.dtype.names:
+                for n, dim in zip(self.fields, self.dims):
                     column_mean = np.mean(pcoords[n], axis=0)
                     self._mean[n] = column_mean
-                    mean_flat[k:k + column_mean.shape[0]] = column_mean
-                    k += column_mean.shape[0]
+                    mean_flat[k:k + dim] = column_mean
+                    k += dim
                 self._var = np.zeros(1, pcoords.dtype)
-                for n in pcoords.dtype.names:
+                for n in self.fields:
                     self._var[n] = np.var(pcoords[n], axis=0)
                 X = self.as2D(self.fields) - mean_flat[np.newaxis, :]
                 self._cov = np.dot(X.T, X) / len(self)
@@ -192,6 +230,17 @@ class Colvars(object):
         self._compute_moments()
         return self._cov / len(self)
 
+    def overlap_3D_units(self, other, indicator='max'):
+        r'''Compute the minimum of the overlap scores for each Cartesian subunit.
+        '''
+        if set(self.fields) != set(other.fields):
+            raise ValueError('Attempted to compute the overlap of two sets with different dimensions. Giving up.')
+        overlap_1D = []
+        for field in self.fields:
+            o = overlap_svm(self._colvars[field], other._colvars[field], indicator=indicator)
+            overlap_1D.append(o)
+        return np.min(overlap_1D)  # or return product? / sum log?
+
     def overlap_plane(self, other, indicator='max', return_plane=False):
         r'''Computes overlap between two distributions from classifcation error of a support vector machine trained on the data from both distributions.
 
@@ -220,44 +269,17 @@ class Colvars(object):
             b : float
                 intercept parameter b of the hyperplane
          '''
-        import sklearn.svm
-        clf = sklearn.svm.LinearSVC(max_iter=10000)
+
         if set(self.fields) != set(other.fields):
             raise ValueError('Attempted to compute the overlap of two sets with different dimensions. Giving up.')
-            # TODO: have option that selects the overlap automatically
+            # TODO: have option that selects the overlap (what?) automatically
         X_self = self.as2D(fields=All)
         X_other = other.as2D(fields=All)
-        X = np.vstack((X_self, X_other))
-        n_self = X_self.shape[0]
-        n_other = X_other.shape[0]
-        labels = np.zeros(n_self + n_other, dtype=int)
-        labels[n_self:] = 1
-        mean = np.mean(X, axis=0)
-        std = np.maximum(np.std(X, axis=0), 1.E-6)
-        clf.fit((X - mean) / std, labels)
-        c = np.zeros((2, 2), dtype=int)
-        p_self = clf.predict((X_self - mean)/std)
-        p_other = clf.predict((X_other - mean)/std)
-        c[0, 0] = np.count_nonzero(p_self == 0)
-        c[0, 1] = np.count_nonzero(p_self == 1)
-        c[1, 0] = np.count_nonzero(p_other == 0)
-        c[1, 1] = np.count_nonzero(p_other == 1)
-        c_sum = c.sum(axis=1)
-        c_norm = c / c_sum[:, np.newaxis]
-        if indicator == 'max':
-            return_value = max(c_norm[0, 1], c_norm[1, 0])
-        elif indicator == 'min':
-            return_value = min(c_norm[0, 1], c_norm[1, 0])
-        elif indicator == 'down':
-            return_value = c_norm[1, 0]  # other -> self
-        elif indicator == 'up':
-            return_value = c_norm[0, 1]  # self -> other
-        else:
-            return_value = c_norm
+        overlap, clf = overlap_svm(X_self, X_other, indicator='max', return_classifier=True)
         if return_plane:
-            return return_value, clf.coef_[0], clf.intercept_[0]
+            return overlap, clf.coef_[0], clf.intercept_[0]
         else:
-            return return_value
+            return overlap
 
     def overlap_Bhattacharyya(self, other):
         # https://en.wikipedia.org/wiki/Bhattacharyya_distance
@@ -372,7 +394,15 @@ class Colvars(object):
                 return results_s
 
     def closest_point(self, x):
-        'Find the replica which is closest to x in order parameters space.'
+        r'''Find the replica which is closest to x in order parameters space.
+
+        Returns
+        -------
+        the optimal search result, encoded as a dict with keys:
+        * i: the frame index (discrete time step) of the optimal result
+        * d: the distance to the optimal point
+        * x: the order parameters of the optimal point
+        '''
         #print('input shapes', self.as2D.shape, recscalar_to_vector(x).shape)
         dist = np.linalg.norm(self.as2D(fields=self.fields) - structured_to_flat(x, fields=self.fields), axis=1)
         #print('dist shape', dist.shape)
@@ -397,11 +427,12 @@ class Colvars(object):
 
     @property
     def dims(self):
-        res = []
-        for n in self.fields:
-            shape = self._colvars.dtype.fields[n][0].shape
-            if len(shape) == 0:
-                res.append(1)
-            else:
-                res.append(shape[0])
-        return res
+        return recarray_dims(self._colvars)
+        #res = []
+        #for n in self.fields:
+        #    shape = self._colvars.dtype.fields[n][0].shape
+        #    if len(shape) == 0:
+        #        res.append(1)
+        #    else:
+        #        res.append(shape[0])
+        #return res

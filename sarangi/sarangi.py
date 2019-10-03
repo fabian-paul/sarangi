@@ -6,17 +6,17 @@ import concurrent.futures
 import subprocess
 import yaml
 import tempfile
+from tqdm import tqdm
 from .util import *
 from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 from .colvars import Colvars
 from .image import Image, load_image, interpolate_id
 from .queuing import *
+from deprecated import deprecated
 
-
-# TODO: better handling of "all" fields: this is currently in really bad shape
+# TODO: better handling of "all" fields: this is currently in bad shape
 # TODO: find a better way to handle the "step" column in NAMD covlar files
 # TODO: offer some rsyc script to copy data
-# TODO: write function that returns the angles between displacements
 
 
 __all__ = ['String', 'root', 'load', 'main']
@@ -24,6 +24,49 @@ __author__ = 'Fabian Paul <fapa@uchicago.edu>'
 
 
 _Bias = collections.namedtuple('_Bias', ['ri', 'spring', 'rmsd_simids', 'bias_simids'])
+
+
+def find_realization_in_string(strings, node, subdir='colvars', ignore_missing=True):
+    r'''In a string or in multiple strings, find actual frame that is close to the given point.
+
+    Parameters
+    ----------
+    strings: String or iterable of Strings
+        strings to search
+    node: numpy structured array
+        The point, given in structured numpy array format.
+    subdir: str
+        Name of the colvars subdirectory. Must be compatible with fields of given node.
+    ignore_missing: bool
+        Ignore missing colvar files.
+
+    Returns
+    -------
+    image: Image
+        the optimal Image object
+    step: int
+        the optimal frame index (discrete time step) in the MD data of the optimal index
+    dist: float
+    '''
+    if isinstance(strings, String):
+        strings = [strings]
+
+    responses = []
+    for string in strings:
+        for im in string.images.values():
+            try:
+                responses.append((im, im.colvars(subdir=subdir, fields=list(node.dtype.names)).closest_point(node)))
+            except FileNotFoundError as e:
+                if ignore_missing:
+                    warnings.warn(str(e))
+                else:
+                    raise
+    best_idx = np.argmin([r[1]['d'] for r in responses])
+    best_image = responses[best_idx][0]
+    best_step = responses[best_idx][1]['i']
+    best_dist = responses[best_idx][1]['d']
+    print('best image is %s at distance %f' % (best_image.image_id, best_dist))
+    return best_image, best_step, best_dist
 
 
 # TODO: currently not clear if replica exchange groups will ever be needed, better remove this code
@@ -165,7 +208,7 @@ class String(object):
         self.iteration = iteration
         self.images = images
         self.image_distance = image_distance
-        self.previous = previous
+        self._previous = previous
         self.colvars_def = colvars_def
         self.opaque = opaque
         self.groups = dict()
@@ -185,7 +228,7 @@ class String(object):
     def __str__(self):
         str_images = '{' + ', '.join(['%g:%s'%(seq, im) for seq, im in self.images.items()]) + '}'
         return 'String(branch=\'%s\', iteration=%d, images=%s, image_distance=%f, previous=%s, colvars_def=%s, opaque=%s)' % (
-            self.branch, self.iteration, str_images, self.image_distance, self.previous, self.colvars_def, self.opaque)
+            self.branch, self.iteration, str_images, self.image_distance, self._previous, self.colvars_def, self.opaque)
 
     def __getitem__(self, key):
         if isinstance(key, float) or isinstance(key, int):
@@ -195,6 +238,16 @@ class String(object):
         else:
             raise ValueError('key is neither a number nor a string, don\'t know what to do with it.')
 
+    @property
+    def is_homogeneous(self) -> bool:
+        'True, if all the nodes live in the same collective variable space (uniform dimension).'
+        fields = self.images_ordered[0].fields
+        for im in self.images_ordered[1:]:
+            if im.fields != fields:
+                return False
+        return True
+
+    @deprecated
     def discretize(self, points, states_per_arc=100):
         # TODO first check compatibility with path (fields)
         from .util import pairing
@@ -210,7 +263,7 @@ class String(object):
         if iteration is None:
             iteration = self.iteration
         if previous is None:
-            previous = self.previous
+            previous = self._previous
         if images is None:
             images = dict()
         if branch is None:
@@ -337,18 +390,19 @@ class String(object):
             q = self.images[j]
         else:
             raise ValueError('parameter j has incorrect type')
+
+        real_fields = p.fields  # use same cvs as node of p
+
         if where == 'mean':
-            x = recarray_average(p.colvars(subdir=subdir, fields=fields).mean, q.colvars(subdir=subdir, fields=fields).mean)
+            x = recarray_average(p.colvars(subdir=subdir, fields=real_fields).mean, q.colvars(subdir=subdir, fields=real_fields).mean)
         elif where == 'x0':
-            x = recarray_average(p.x0(subdir=subdir, fields=fields), q.x0(subdir=subdir, fields=fields))
+            x = recarray_average(p.x0(subdir=subdir, fields=real_fields), q.x0(subdir=subdir, fields=real_fields))
         elif where == 'node' or where == 'center':
             x = recarray_average(p.node, q.node)
         elif where == 'plane':
             raise NotImplementedError('bisection at SVM plane not implemented yet')
         else:
             raise ValueError('Unrecognized value "%s" for option "where"' % where)
-
-        real_fields = p.fields  # use same cvs as node of p
 
         if search == 'points':
             query_p = p.colvars(subdir=subdir, fields=real_fields).closest_point(x)
@@ -362,17 +416,8 @@ class String(object):
                 best_image = q
                 best_step = query_q['i']
         elif search == 'string':
-            # TODO: move code to .find() ?
-            responses = []
-            for im in self.images.values():
-                try:
-                    responses.append((im, im.colvars(subdir=subdir, fields=real_fields).closest_point(x)))
-                except FileNotFoundError as e:
-                    warnings.warn(str(e))
-            best_idx = np.argmin([r[1]['d'] for r in responses])
-            best_image = responses[best_idx][0]
-            best_step = responses[best_idx][1]['i']
-            print('best distance is', responses[best_idx][1]['d'], '@', responses[best_idx][0].image_id)
+            best_image, best_step, best_dist = find_realization_in_string([self], node=x, subdir=subdir)
+            print('best distance is', best_dist, '@', best_image.image_id, ':', best_step)
         else:
             raise ValueError('Unrecognized value "%s" of parameter "search"' % search)
 
@@ -404,6 +449,13 @@ class String(object):
     interpolate = bisect
 
     def bisect_and_propagate_util_connected(self, run_locally=False):
+        r'''Blocking function that automatically bisects and submits jobs until the string is connected.
+
+        Parameters
+        ----------
+        run_locally: bool
+            Run MD on this machine instead of submitting to the queuing system.
+        '''
         s = self
         while not s.connected():
             s = s.bisect().propagate(wait=True, run_locally=run_locally)
@@ -435,12 +487,13 @@ class String(object):
 
     @property
     def base(self):
+        # TODO: this property name is confusing, pick a better one
         return '{root}/strings/{branch}_{iteration:03d}'.format(root=root(), branch=self.branch, iteration=self.iteration)
 
     def check_against_string_on_disk(self):
         'Compare currently loaded string to the version on disk. Check that read-only elements were not modified.'
         try:
-            on_disk = String.load(branch=self.branch, iteration=self.iteration)
+            on_disk = String.load(branch=self.branch, offset=self.iteration)
         except FileNotFoundError:
             # plan file does not exist, we therefore assume that this is a new string (or new iteration)
             return True
@@ -450,20 +503,21 @@ class String(object):
                 warnings.warn('Some images that have already been written to disk to the same plan have been deleted '
                               'in RAM. Unless you know exactly what you are doing, the current string cannot be saved.')
                 return False
-            if self.images[on_disk_key] != on_disk_image:
-                warnings.warn('Images that have already been written to disk have changed in RAM. '
-                              'Unless you know exactly what you are doing, the current string cannot be saved.')
+            if not self.images[on_disk_key] == on_disk_image:
+                warnings.warn(('Image %f that has already been written to disk have changed in RAM. ' +
+                              'Unless you know exactly what you are doing, the current string cannot be saved.') % on_disk_key)
                 return False
         return True
 
     def write_yaml(self, backup=True, message=None, _override=False):
         'Save the full status of the String to yaml file in directory $STRING_SIM_ROOT/strings/<branch>_<iteration>'
         import shutil
-        if not self.check_against_string_on_disk() and not _override:
-            raise RuntimeError(
-                'There is already a plan with the same name on disk that has different images from the one you are '
-                'trying to save. Stopping the operation, new string was not saved! You can override, if you are sure '
-                'what you are doing.')
+        if not _override:
+            if not self.check_against_string_on_disk():
+                raise RuntimeError(
+                    'There is already a plan with the same name on disk that has different images from the one you are '
+                    'trying to save. Stopping the operation, new string was not saved! You can override, if you are sure '
+                    'what you are doing.')
         string = {}
         for key, image in self.images.items():
             assert key==image.seq
@@ -489,14 +543,110 @@ class String(object):
         with open(fname_base + '.yaml', 'w') as f:
             yaml.dump(config, f, width=1000, default_flow_style=None)  # default_flow_style=False,
 
-    def evolve(self, subdir='colvars', reparametrize=True, rmsd=False, linear_bias=0, swarm=None, do_smooth=False):
-        '''Created a copy of the String where the images are evolved and the string is reparametrized to have equidistant images.
+
+    def evolve_kinetically(self, subdir='colvars', threshold=0.1, overlap='units', augment_colvars=True, adjust_springs=True, swarm=True, write=False):
+        '''Create a copy of the String where images are evolved and the string is reduced to images on the kinetically widest sub-path.
+
+            Parametes
+            ---------
+            overlap: str or ndarray((n, n))
+                One of 'plane', 'units' or an overlap matrix in ndarray format.
+
+            Notes
+            -----
+            TODO: Future generation of this software should not only find the single widest path
+            to propagate but some collection of dominant paths.
+        '''
+        from .util import widest_path, structured_to_dict, dict_to_structured, IDEAL_GAS_CONSTANT, DEFAULT_TEMPERATUE
+        from collections import defaultdict
+        if not swarm:
+            raise NotImplementedError('evolve_kinetically can be only used with swarm=True')
+
+        if isinstance(overlap, str) and overlap in ['plane', 'units']:
+            overlap_matrix = self.overlap(subdir=subdir, algorithm=overlap, matrix=True)
+        else:
+            overlap_matrix = overlap
+        epsilon = 1E-6  # to make sure that the matrix stays formally connected; TODO: find better solution (distance-based!)
+        indices_of_images_to_evolve = widest_path(overlap_matrix + epsilon)
+        print('length of widest path is', len(indices_of_images_to_evolve))
+        print('overlap at bottleneck is', min(overlap_matrix[i, j] for i, j in
+                                              zip(indices_of_images_to_evolve[0:-1], indices_of_images_to_evolve[1:])))
+        images_to_evolve = [self.images_ordered[i] for i in indices_of_images_to_evolve]
+
+        # Augment colvars searches through all the colvars atom by atom (or unit by unit) and
+        # adds them to the node, if there is no overlap. Colvars that are already part of the node,
+        # stay there.
+        # We already selected the widest path, but that does not mean that the path is wide enough,
+        # i.e. the bottleneck can still be small. So we need to get a bigger colvar space under control.
+        if augment_colvars:
+            fields = defaultdict(set)
+            for i, (a, b) in enumerate(zip(images_to_evolve[0:-1], images_to_evolve[1:])):
+                fields[a] |= set(a.fields)  # copy ...
+                fields[b] |= set(b.fields)  # ... old fields
+                f = set(Image.get_fields_non_overlapping(a, b, subdir=subdir, threshold=threshold))
+                fields[a] |= f  # for each image B, we might add fields to improve both overlaps each of A and C
+                fields[b] |= f  # A .. B .. C
+                if len(f) > 0:
+                    print('Added new field(s)', f, 'to images', i, 'and', i + 1)
+            new_nodes = [im.colvars(fields=list(fields[im])).mean for im in images_to_evolve]  # set new node to the old means
+            del fields
+        else:
+            new_nodes = [im.colvars(fields=im.fields).mean for im in images_to_evolve]
+
+        # Compute the distance between neighbors and set spring constant accordingly, sigma=delta.
+        # If adjust springs is False, only fill in missing spring constants.
+        new_springs = [structured_to_dict(im.spring) for im in images_to_evolve]
+        RT = IDEAL_GAS_CONSTANT * DEFAULT_TEMPERATUE  # kcal/mol
+        for i, (a, b) in enumerate(zip(new_nodes[0:-1], new_nodes[1:])):
+            for f in set(a.dtype.names) & set(b.dtype.names):  # only adjust springs for which we can compute the distance between (augmented) nodes
+                dist = np.linalg.norm(a[f] - b[f])  # not sure if this is a good idea; node distances are too random
+                k = RT / dist**2  # kcal/mol/A^2
+                if f not in new_springs[i] or adjust_springs:
+                    current_spring = new_springs[i][f] if f in new_springs[i] else 0.
+                    new_springs[i][f] = max(current_spring, k)
+                if f not in new_springs[i + 1] or adjust_springs:
+                    current_spring = new_springs[i + 1][f] if f in new_springs[i + 1] else 0.
+                    new_springs[i + 1][f] = max(current_spring, k)
+
+
+        # create the actual string object
+        iteration = self.iteration + 1
+        new_string = self.empty_copy(iteration=iteration, previous=self)
+        image_class = images_to_evolve[0].__class__
+
+        for i_running, (node, spring) in enumerate(zip(new_nodes, new_springs)):
+            best_image, best_step, best_dist = find_realization_in_string([self], node=node, subdir=subdir)
+
+            new_image = image_class(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_running, 0),
+                                    previous_image_id=best_image.image_id, previous_frame_number=best_step,
+                                    node=node, terminal=None, spring=dict_to_structured(spring),
+                                    group_id=best_image.group_id, swarm=swarm)
+
+            new_string.add_image(new_image)
+
+        if write:
+            new_string.write_yaml(message='kinetic evolution')
+        return new_string
+
+    # TODO: write down the simplest version that includes a colvar into all iamges of the new iteration, once it is found to be important
+    # for any pair of images!
+    def evolve(self, subdir='colvars', reparametrize=True, update_fields=False, n_nodes=None, rmsd=False, linear_bias=0,
+               threshold=0.1, adjust_springs=True, swarm=None, do_smooth=False):
+        '''Created a copy of the String where the images are evolved and the string is reparametrized to have geometically equidistant images.
 
            Parameters
            ----------
            reparametrize : bool
                 Reparamtrized the new string such that images are equidistant in collective
                 variable space.
+
+            update_fields : bool
+                Include colvars that exhibit low overlap into the (controlled) nodes.
+                If a colvar in any image show low overlap, the colvar is added to the
+                whole string.
+
+            n_nodes: int
+                Reparametrize the string such that the new string contains exactly n_nodes.
 
            rmsd: bool
                during reparametrization, image distance is measured with the RMSD metric that
@@ -524,15 +674,30 @@ class String(object):
 
         # collect all means, in the same time check that all the coordinate dimensions and
         # coordinate names are the same across the string
-        fields = self.images_ordered[0].fields
+        from .util import bisect_decreasing, dict_to_structured, structured_to_dict, IDEAL_GAS_CONSTANT
+        from collections import defaultdict
+        if not self.is_homogeneous and reparametrize:
+            raise RuntimeError('Not all nodes live in exactly the same colvars space. This is not supported by this function.')
+
+        if update_fields:
+            fields = set()
+            images_ordered = self.images_ordered
+            for a, b in zip(images_ordered[0:-1], images_ordered[1:]):
+                fields |= set(a.fields)  # copy ...
+                fields |= set(b.fields)  # ... old fields
+                fields |= set(Image.get_fields_non_overlapping(a, b, subdir=subdir, threshold=threshold))
+            fields = list(fields)
+        else:
+            fields = self.images_ordered[0].fields
+
         colvars_0 = self.images_ordered[0].colvars(subdir=subdir, fields=fields)
         real_fields = colvars_0.fields  # replaces All by concrete list of names
         dims = colvars_0.dims
         current_means = []
         for image in self.images_ordered:
-            colvars = image.colvars(subdir=subdir, fields=fields)
-            if set(colvars.fields) != set(real_fields) or colvars.dims != dims:
-                raise RuntimeError('colvars fields / dimensions are inconsistent across the string. First inconsistency in image %s.' % image.image_id)
+            colvars = image.colvars(subdir=subdir, fields=real_fields)
+            #if reparametrize and (set(colvars.fields) != set(real_fields) or colvars.dims != dims):
+            #    raise RuntimeError('colvars fields / dimensions are inconsistent across the string. First inconsistency in image %s.' % image.image_id)
             # The geometry functions in the reparametrization module work with 2-D numpy arrays, while the colvar
             # class used recarrays and (1, n) shaped ndarrays. We therefore convert to plain numpy and strip extra dimensions.
             current_means.append(structured_to_flat(colvars.mean, fields=real_fields)[0, :])
@@ -549,9 +714,15 @@ class String(object):
         # do the string reparametrization
         if reparametrize:
             ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
+            if n_nodes is not None:
+                print('running bisecion to find the correct parameter for reparametrization ')
+                i_d = bisect_decreasing(lambda x: len(compute_equidistant_nodes_2(old_nodes=ordered_means, d=x)),
+                            a=self.image_distance*n_atoms**0.5, b=self.image_distance*n_atoms**0.5, level=n_nodes)
+                print('result is', i_d)
+                self.image_distance = i_d / n_atoms**0.5
             nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
-                                            d_skip=self.image_distance * n_atoms**0.5 / 2)
-            # do some self-consistency tests
+                                                d_skip=self.image_distance * n_atoms**0.5 / 2)
+            # do some self-consistency tests of the reparamtrization step
             eps = 1E-6
             # check distances
             for i, (a, b) in enumerate(zip(nodes[0:-1], nodes[1:])):
@@ -567,6 +738,18 @@ class String(object):
         else:
             nodes = current_means
 
+        # compute new spring constants
+        springs = defaultdict(dict)
+        T = 303.15
+        RT = IDEAL_GAS_CONSTANT * T
+        for i, (x, y) in enumerate(zip(nodes[0:-1], nodes[1:])):
+            for f in real_fields:
+                k = RT / np.linalg.norm(x[f] - y[f])**2
+                current_spring = springs[i][f] if f in springs[i] else 0.
+                springs[i][f] = max(k, current_spring)
+                current_spring = springs[i + 1][f] if f in springs[i + 1] else 0.
+                springs[i + 1][f] = max(current_spring, k)
+
         iteration = self.iteration + 1
         new_string = self.empty_copy(iteration=iteration, previous=self)
         image_class = self.images_ordered[0].__class__
@@ -574,22 +757,19 @@ class String(object):
         for i_node, x in enumerate(nodes):
             # we have to convert the unrealized nodes (predicted point of conformational space) to realized frames
             node = flat_to_structured(x[np.newaxis, :], fields=real_fields, dims=dims)
-            responses = []
-            for im in self.images.values():
-                try:
-                    responses.append((im, im.colvars(subdir=subdir, fields=fields).closest_point(node)))
-                except FileNotFoundError as e:
-                    warnings.warn(str(e))
-            best_idx = np.argmin([r[1]['d'] for r in responses])
-            best_image = responses[best_idx][0]
-            best_step = responses[best_idx][1]['i']
+            best_image, best_step, best_dist = find_realization_in_string([self], node=node, subdir=subdir)
 
             if swarm is None:
                 swarm = best_image.swarm
 
+            if adjust_springs:
+                spring = dict_to_structured(springs[i_node])
+            else:
+                spring = best_image.spring
+
             new_image = image_class(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_node, 0),
                                     previous_image_id=best_image.image_id, previous_frame_number=best_step,
-                                    node=node, terminal=None, spring=best_image.spring,
+                                    node=node, terminal=None, spring=spring,
                                     group_id=best_image.group_id, swarm=swarm)
 
             new_string.images[new_image.seq] = new_image
@@ -623,14 +803,45 @@ class String(object):
     #    return images[best], results[best][0], results[best][1]
 
     @classmethod
-    def load(cls, branch='AZ', iteration=0):
-        'Create a String object by recovering from the yaml file corresponding to the given branch and interation number (in the current project directory tree).'
-        fname = '%s/strings/%s_%03d/plan.yaml' % (root(), branch, iteration)
-        string = cls.load_form_fname(fname)
-        if int(string.iteration) != iteration:
-            raise RuntimeError(
-                'Plan file is inconsitent: iteration recorded in the file is %s but the iteration encoded in the folder name is %d.' % (
-                    string.iteration, iteration))
+    def load(cls, branch='AZ', offset=-1):
+        r'''Find specific iteration of the string in $STRING_SIM_ROOT/strings/ and recover it from the yaml file.
+
+        Parameters
+        ----------
+        branch: str
+            name of the branch to load
+        offset: int
+            If this number is positive, load string with iteration number equal to offset.
+            If this number is negative, count iteration numbers backwards starting
+            from the maximal iteration (which can currently be found on disk).
+            -1 (default) loads the highest iteration.
+            -2 loads the second to last iteration and so on.
+            This corresponds to Python array indexing.
+
+        Returns
+        -------
+        A String object.
+        '''
+        if offset == 0:
+            raise ValueError('Offset cannot be zero. Must be >0 or <0.')
+        elif offset > 0:
+            fname = '%s/strings/%s_%03d/plan.yaml' % (root(), branch, offset)
+            string = cls.load_form_fname(fname)
+        else:
+            folder = root() + '/strings/'
+            max_iteration = float('-inf')
+            for entry in os.listdir(folder):
+                splinters = entry.split('_')
+                if len(splinters) == 2:
+                    folder_branch, folder_iteration = splinters
+                    if folder_branch == branch and folder_iteration.isdigit():
+                        max_iteration = max([max_iteration, int(folder_iteration)])
+            if max_iteration > float('-inf'):
+                print('Highest current iteration is %d. Loading iteration %d' % (max_iteration, max_iteration + 1 + offset))
+                fname = '%s/strings/%s_%03d/plan.yaml' % (root(), branch, max_iteration + 1 + offset)
+                string = cls.load_form_fname(fname)
+            else:
+                raise RuntimeError('No string with branch identifier "%s" found' % branch)
         return string
 
     @classmethod
@@ -653,25 +864,234 @@ class String(object):
     @property
     def previous_string(self):
         'Attempt to load previous iteration of the string'
-        if self.previous is None:
+        if self._previous is None:
             if self.iteration > 1:
-                print('loading -1')
-                self.previous = String.load(branch=self.branch, iteration=self.iteration - 1)
+                print('loading iteration %d' % (self.iteration - 1))
+                self._previous = String.load(branch=self.branch, offset=self.iteration - 1)
             else:
-                print('loading *')  # TODO: this is currently broken and will not work like this
-                self.previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
-        return self.previous
+                raise RuntimeError('There is no string before iteration 1. Please use Image.x0 to access data from the "zero\'th" iteration.')
+                # print('loading *')  # TODO: this is currently broken and will not work like this
+                # self._previous = String.from_scratch(branch=self.branch, iteration_id=0)  # TODO: find better solution
+        return self._previous
 
-    def overlap(self, subdir='colvars', fields=All, indicator='max', matrix=False, return_ids=False):
-        'Compute the overlap (SVM) between images of the string'
-        from tqdm.auto import tqdm
+
+    def bisect_and_lift(self, subdirs: str='colvars', fields=All, threshold: float=0.1, order='sequential', overlap='units', write=False):
+        r'''Bisect and lift to higher dimension (by increasing the number of collective variables), if needed.
+
+
+        This method essentially calls bottlenecks and bisect_and_lift at.
+
+        Parameters
+        ----------
+        See `String.bisect_and_lift_at` and `String.bottlenecks`.
+        '''
+        new_images = []
+        bottlenecks = self.bottlenecks(subdirs=subdirs, overlap=overlap, order=order, threshold=threshold, fields=fields,
+                                       ignore_missing=True)
+        for a, b in bottlenecks:
+            new_image = self.bisect_and_lift_at(a, b, insert=False, threshold=threshold)
+            new_images.append(new_image)
+        for im in new_images:
+            print('Created new image', im.image_id)
+            self.add_image(im)
+        if write:
+            self.write_yaml(message='filled gaps and lifted')
+        return new_images
+
+
+    def bisect_and_lift_at(self, a: Image, b: Image, subdir: str='colvars', insert: bool=True, threshold: float=0.1, T: float=303.15) -> Image:
+        r'''Bisect and lift to higher dimension (by increasing the number of collective variables), if needed.
+
+        Parameters
+        ----------
+        a: Image
+            First image in pair.
+        b: Image
+            Second image in pair.
+        subdir: str
+            Name of the subdir with the "large" colvar space.
+        default_subdir: str
+            Name of the subdir wiht the "small" colvar space.
+        insert: bool
+            Insert new image into the current string?
+        threshold: float
+            Threshold for overlap under which, new atoms are added to colvar space.
+
+        Notes
+        -----
+        Use this together with bottlenecks:
+        >>> for a, b in s.bottlenecks(overlap='units_3D'):
+        >>>     s.bisect_and_lift_at(a, b, insert=True)
+        >>> s.write_yaml(message='filled gaps')
+
+        Returns
+        -------
+        A newly generated (unpropagated) image
+        '''
+        from .colvars import overlap_svm
+        from .util import recarray_dims, IDEAL_GAS_CONSTANT
+        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
+
+        x = a.colvars(subdir=subdir)  #  This is not necessarily the colvars subdir!
+        y = b.colvars(subdir=subdir)
+        # x.fields and y.fields will contain all fields and not only the ones that are currently under control
+
+        # now add new fields, if required (the current node contains only the cvs that are already known, need to go back to x0 to look at all dimensions)
+        x0 = a.x0(subdir=subdir)  # only needed for new fields
+        y0 = b.x0(subdir=subdir)  # ditto
+
+        # find field to be added (because of low overlap)
+        low_fields = [field for field in x.fields if overlap_svm(x._colvars[field], y._colvars[field]) < threshold]
+        all_fields = list(set(low_fields) | set(a.fields) | set(b.fields))
+        #print('all_fields', all_fields)
+        #print('low_fields', low_fields)
+        new_fields = list(set(low_fields) - set(a.fields) - set(b.fields))
+        if len(new_fields) > 0:
+            print('added fields', new_fields, 'to nodes', a.image_id, '+', b.image_id)
+        # now make new node object; first collect sizes of all new and old (node) fields
+        dim = {name: d for name, d in zip(x.fields, x.dims) if name in new_fields}
+        dim.update({name:d for name, d in zip(a.node.dtype.names, recarray_dims(a.node))})
+        dim.update({name:d for name, d in zip(b.node.dtype.names, recarray_dims(b.node))})
+        new_dtype = np.dtype([(f, np.float32, dim[f]) for f in all_fields])
+        new_node = np.zeros(1, dtype=new_dtype)
+        new_spring = np.zeros(1, dtype=new_dtype)
+        for field in new_fields:
+            a_node_f = x0[field]
+            b_node_f = y0[field]
+            new_node[field] = 0.5*(a_node_f + b_node_f)
+            new_spring[field] = RT * np.linalg.norm(a_node_f - b_node_f)**-2.  # RMSD or not???
+        # now add the known fields
+        for field in set(a.fields) & set(b.fields):
+            new_node[field] = 0.5*(a.node[field] + b.node[field])
+            new_spring[field] = 0.5*(a.spring[field] + b.spring[field])
+        # half known
+        for field in set(a.fields) - set(b.fields):
+            new_node[field] = a.node[field]
+            new_spring[field] = a.spring[field]
+        for field in set(b.fields) - set(a.fields):
+            new_node[field] = b.node[field]
+            new_spring[field] = b.spring[field]
+
+        # find realization, first prepare list of all previous strings
+        s = self
+        strings_to_search = [s]
+        while s.iteration >= 2:  # lowest string to search is string with index 1
+            s = s.previous_string
+            strings_to_search.append(s)
+        best_image, best_frame, _ = find_realization_in_string(strings=strings_to_search, node=new_node, subdir=subdir)
+        new_image_id = interpolate_id(a.image_id, b.image_id, excluded=[im.image_id for im in self.images_ordered])
+        new_image = a.__class__(image_id=new_image_id, previous_image_id=best_image.image_id,
+                                previous_frame_number=best_frame, group_id=None, node=new_node, spring=new_spring,
+                                swarm=a.swarm)
+
+        if insert:
+            self.add_image(new_image)
+
+        return new_image
+
+
+    def bottlenecks(self, subdirs='colvars', overlap='units', order='sequential', threshold=0.1, fields=All, ignore_missing=True):
+        r'''Advanced identification of gaps in the sampling. Determines pairs of images to sample in-between.
+
+        Parameters
+        ----------
+        subdirs: str or list of str
+            List of subdirectory names in the observables directory.
+        overlap: str  # TODO: allow to pass in a matrix and just use that?
+            One of 'units' or 'plane'. Determines type of overlap computation. 'units' finds dividing planes
+            for each atom (or more precisely: for each 3D unit) separately. 'plane' finds a plane in the full
+            product space of all observables.
+        order: str
+            One of 'sequential' or 'shortest'. How to search for bottlenecks. 'sequential' follows the canonical
+            order of the string, i.e. only examines nodes that are direct neightbors according to the canconical
+            (arc length) indexing of the string. 'shortest' determines the min-bottleneck path from all possible
+            paths through the images.
+        threshold:
+            Pairs of images with overlap lower than this value are returned.
+        ignore_missing: bool
+            Ignore missing observable files; simply skip pairs that have missing files.
+        alpha: float
+            Parameter for definition of image distance for the computation of the optimal
+            image pair for interpolation.
+
+        Returns
+        -------
+        List of pairs of images. See notes below.
+
+        Notes
+        -----
+        >>> import sarangi
+        >>> s = sarangi.load(branch='AZ')
+        >>> for a, b in s.bottlenecks(overlap='units'):
+        >>>    s.bisect_and_lift_at(a, b, insert=True)
+        >>> s.write_yaml()
+        >>> s.propagate()
+        '''
+        from .util import recarray_difference, recarray_norm, widest_path
+        if overlap not in ['units', 'plane']:
+            raise NotImplementedError('Only overlap="units_3D" is currently implemented.')
+        pairs = []
+        if order == 'sequential':
+            for a, b in zip(self.images_ordered[0:-1], self.images_ordered[1:]):
+                try:
+                    if a.overlap_3D_units(b, subdir=subdirs, fields=fields) < threshold:
+                        pairs.append((a, b))
+                except FileNotFoundError as e:
+                    if ignore_missing:
+                        warnings.warn(str(e))
+                    else:
+                        raise
+            return pairs
+        elif order == 'shortest':
+            n = len(self)
+            print('computing the overlap matrix')
+            overlap_matrix = np.zeros((n, n)) + np.nan
+            #distance_matrix = np.array((n, n))
+            # find the overlaps for all pairs of nodes
+            for i, a in enumerate(tqdm(self.images_ordered)):
+                overlap_matrix[i, i] = 0.
+                for j_excess, b in enumerate(self.images_ordered[i + 1:]):
+                    j = i + 1 + j_excess
+                    if overlap == 'units':
+                        overlap_matrix[i, j] = a.overlap_3D_units(b, subdir=subdirs, fields=fields)
+                    else:
+                        overlap_matrix[i, j] = a.overlap_plane(b, subdir=subdirs, fields=fields)
+                    overlap_matrix[j, i] = overlap_matrix[i, j]
+                    #distance_matrix[i, j] = recarray_norm(recarray_difference(a.node, b.node), rmsd=True)
+                    #distance_matrix[j, i] = distance_matrix[i, j]
+            overlap_matrix[-1, -1] = 0.
+            # now find the min-bottleneck path
+            # TODO: play around with different score: e.g. 1/overlap_matrix as distance score
+            #weight_matrix = np.where(overlap_matrix > 0, 1. - overlap_matrix, 1. + alpha*distance_matrix)  # this might require a bit of experimentation
+            print('finding the widest path')
+            epsilon = 1.E-6  # TODO: do this distance-based instead of
+            path = widest_path(overlap_matrix + epsilon)
+            pairs = [(a,b) for a, b in zip(path[0:-1], path[1:])]
+            overlap = [overlap_matrix[a, b] for a, b in pairs]
+            print('bottleneck has overlap:', min(overlap))
+            im_o = self.images_ordered
+            return [(im_o[i], im_o[j]) for ov, (i, j) in zip(overlap, pairs) if ov < threshold]
+        else:
+            raise ValueError('Unknown value of `order`. Must be one of "sequential" or "shortest".')
+
+    def overlap(self, subdir='colvars', fields=All, algorithm='plane', indicator='max', matrix=False, return_ids=False):
+        r'''Compute the overlap (SVM) between images of the string.
+
+        Notes
+        -----
+        Order of images in the retuned array/ matrix is the same as in self.images_ordered.
+        '''
+        from tqdm import tqdm
         real_fields = self.images_ordered[0].colvars(fields=fields).fields
         ids = []
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in enumerate(zip(tqdm(self.images_ordered[0:-1]), self.images_ordered[1:])):
                 try:
-                    o[i] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                    if algorithm=='plane':
+                        o[i] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                    else:
+                        o[i] = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
                     ids.append((a.seq, b.seq))
                 except FileNotFoundError as e:
                     warnings.warn(str(e))
@@ -685,7 +1105,10 @@ class String(object):
                 o[i, i] = 0.
                 for j, b in enumerate(self.images_ordered[i+1:]):
                     try:
-                        o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                        if algorithm == 'plane':
+                            o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                        else:
+                            o[i, i + j + 1] = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
                         o[i + j + 1, i] = o[i, i + j + 1]
                     except FileNotFoundError as e:
                         warnings.warn(str(e))
@@ -693,6 +1116,7 @@ class String(object):
             return o
 
     def overlap_by_atom(self, subdir='colvars'):
+        'Good for finding non-overlapping atoms.'
         fields = list(self.images_ordered[0].node.dtype.names)
         overlap = np.zeros((len(self) - 1, len(fields))) + np.nan
         images_ordered = self.images_ordered
@@ -733,13 +1157,14 @@ class String(object):
             If x0 is True, only project the initial points (image.x0) to the string.
         curve_defining_string: String object, default=self
             Images of this string define the curve through CV space onto which the images
-            in self are projected.
+            in self are projected. This is good to e.g. compare several projections of
+            the same data or to have the exact same project for multiple data sets.
         where: str
             One of 'nodes' or 'means'. Whether to use the means or the nodes from
             curve_defining_string to define the curve through collective variable space.
         defining_subdir: str
             One used if `where=="nodes"`. Where to find the collective variables to
-            compute the means.
+            compute the means. (Why do we need this?)
 
         Notes
         -----
@@ -755,7 +1180,7 @@ class String(object):
         :   Grisell Díaz Leines and Bernd Ensing. Path finding on high-dimensional free energy landscapes.
             Phys. Rev. Lett., 109:020601, 2012
         '''
-        from tqdm.auto import tqdm
+        from tqdm import tqdm
         if curve_defining_string is None:
             curve_defining_string = self
         fields = curve_defining_string.images_ordered[0].fields
@@ -763,7 +1188,7 @@ class String(object):
             support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in
                               curve_defining_string.images_ordered]
         elif where == 'means':
-            support_points = [image.colvars(subdir=defining_subdir, fields=fields).mean.as2D(fields=fields)[0, :]
+            support_points = [structured_to_flat(image.colvars(subdir=defining_subdir, fields=fields).mean, fields=fields)[0, :]
                               for image in curve_defining_string.images_ordered]
         else:
             raise ValueError('where must be one of "nodes" or "means"')
@@ -837,8 +1262,9 @@ class String(object):
         'Estimate all free energies using MBAR (when running with conventional order parameters, not RMSD)'
         import pyemma
         import pyemma.thermo
+        from .util import IDEAL_GAS_CONSTANT
 
-        RT = 1.985877534E-3 * T  # kcal/mol
+        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
 
         fields = self.images_ordered[0].fields
         for image in self.images.values():
@@ -888,8 +1314,9 @@ class String(object):
     def mbar_RMSD(self, T=303.15, subdir='rmsd'):  # TODO: move some of this into the Image classes
         'For RMSD-type bias: Estimate all free energies using MBAR'
         import pyemma.thermo
+        from .util import IDEAL_GAS_CONSTANT
 
-        RT = 1.985877534E-3 * T  # kcal/mol
+        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
 
         # collect unique RMSDs and biases
         bias_def_to_simid = collections.defaultdict(list)
@@ -1050,7 +1477,55 @@ class String(object):
                 print('Node %d is not closest to its neighbors according to ordering by ID. Clostest node is %d.' % (
                 i, top1))
 
-    def count_matrix(self, return_t=False, f=1.0, subdir_init='colvars_init', order=0, curve_defining_string=None, clusters='nodes', defining_subdir='colvars'):
+
+    def microstate_assignments(self, subdir='colvars', fields=All, centers='means'):
+        r'''Compute microstate assignment for all data in string. Ordering of result is consistent with self.images_ordered.
+
+            Parameters
+            ----------
+            subdir : str
+                subfolder name for the colvars of the initial point / initial ensemble starting conformations
+
+            TODO
+
+            Returns
+            -------
+            state_seq: list of np.ndarray
+                state_seq[i] is the collection of assigned swarm points from image i
+        '''
+        if isinstance(centers, np.ndarray):
+            cluster_centers = centers
+        elif centers == 'means':
+            cluster_centers = []
+            for im in self.images_ordered:
+                center = structured_to_flat(im.colvars(subdir=subdir, fields=fields).mean, fields=fields)[:, :]
+                cluster_centers.append(center)
+            cluster_centers = np.concatenate(cluster_centers)
+        elif centers == 'nodes':
+            cluster_centers = []
+            for im in self.images_ordered:
+                center = structured_to_flat(im.node, fields=fields)[:, :]
+                cluster_centers.append(center)
+            cluster_centers = np.concatenate(cluster_centers)
+        else:
+            raise ValueError('centers must be one of "means", "nodes" or an array')
+
+        s_images = []
+        # TODO: test me!!!
+        for im in self.images_ordered:
+            frames = im.colvars(subdir=subdir, fields=fields).as2D(fields=fields)
+            #print('frames.shape', frames.shape)
+            #print('cluster_centers.shape', cluster_centers.shape)
+            dmat = np.linalg.norm(frames[:, np.newaxis, :] - cluster_centers[np.newaxis, :, :], axis=2)
+            idx = np.argmin(dmat, axis=1)
+            s_images.append(idx)
+        #s_images = self.arclength_projections(subdir=subdir, x0=False, order=order,
+        #                                      curve_defining_string=curve_defining_string, where=clusters,
+        #                                      defining_subdir=defining_subdir)
+        #s_images = np.maximum(s_images, 0.)
+        return s_images
+
+    def count_matrix(self, f=1.0, subdir='colvars', subdir_init='colvars_init', fields=All, centers='means', return_t=False):
         r'''Estimate MSM from swarm of trajectories data
 
             Parameters
@@ -1064,19 +1539,11 @@ class String(object):
             subdir_init : str
                 subfolder name for the colvars of the initial point / initial ensemble starting conformations
 
-            order : int
-                interpolation order for arc length computation
 
-            curve_defining_string : String
-                string object that contains nodes to use as cluster centers / or for arc length computation
-                by default this is set to self
-
-            clusters : str
+            centers : str
                 One of 'nodes' or 'means'. Where to place the cluster centers of the microstates.
                 # TODO: add multistate SVM as an extra option
 
-            defining_subdir : str
-                Only used if `clusters=="means"`. Where to find the colvars to compute the means.
 
             Returns
             -------
@@ -1095,16 +1562,24 @@ class String(object):
         #if subdir_init is None:
         #    s_starts_images = np.maximum(self.arclength_projections(x0=True), 0.)
         #else:
-        s_starts_images = self.arclength_projections(subdir=subdir_init, x0=False, order=order,
-                                                     curve_defining_string=curve_defining_string, where=clusters,
-                                                     defining_subdir=defining_subdir)
-        s_starts_images = np.maximum(s_starts_images, 0.)
-        s_ends_images = self.arclength_projections(x0=False, order=order, curve_defining_string=curve_defining_string,
-                                                   defining_subdir=defining_subdir)
-        s_ends_images = np.maximum(s_ends_images, 0.)
+        s_starts_images = self.microstate_assignments(subdir=subdir_init, fields=fields, centers=centers)
+        #s_starts_images = self.arclength_projections(subdir=subdir_init, x0=False, order=order,
+        #                                             curve_defining_string=curve_defining_string, where=clusters,
+        #                                             defining_subdir=defining_subdir)
+        #s_starts_images = np.maximum(s_starts_images, 0.)
+        s_ends_images = self.microstate_assignments(subdir=subdir, fields=fields, centers=centers)
+        #s_ends_images = self.arclength_projections(x0=False, order=order, curve_defining_string=curve_defining_string,
+        #                                           where=clusters, defining_subdir=defining_subdir)
+        #s_ends_images = np.maximum(s_ends_images, 0.)
+        if len(s_starts_images) != len(s_ends_images):
+            raise RuntimeError(
+                'Internal inconsistency of swarm data. Number of images in initial points and final points is different.')
         for s_starts, s_ends in zip(s_starts_images, s_ends_images):
+            if len(s_starts) != len(s_ends):
+                raise RuntimeError(
+                    'Internal inconsistency of swarm data. Swarm size is different in initial points and final points.')
             for s_start, s_end in zip(s_starts, s_ends):
-                dtrajs.append([int(round(s_start)*f), int(round(s_end*f))])
+                dtrajs.append([int(round(s_start*f)), int(round(s_end*f))])
         c = msmtools.estimation.cmatrix(dtrajs, lag=1)
         if return_t:
             t = msmtools.estimation.tmatrix(c)
@@ -1112,7 +1587,7 @@ class String(object):
         else:
             return c.toarray()
 
-    def fel_from_msm(self, T=303.15, f=1.0, subdir_init='colvars_init', order=0, curve_defining_string=None):
+    def fel_from_msm(self, T=303.15, subdir='colvars', subdir_init='colvars_init', fields=All, centers='means', return_pi=False):
         r'''Compute the PMF along the string from the stationary distribution of an MSM estimated form the swam data.
 
             Parameters
@@ -1126,8 +1601,16 @@ class String(object):
             subdir_init : str
                 see String.count_matrix
 
+            clusters : str
+                One of 'nodes' or 'means'. Where to place the cluster centers of the microstates.
+                see String.count_matrix
+
             order : int
                 see String.count_matrix
+
+            return_pi: bool
+                If True, return the stationary vector (stationary distribution),
+                else return the emprirical free energy estiamte -RT log(pi).
 
             Returns
             -------
@@ -1136,15 +1619,53 @@ class String(object):
             Note
             ----
             It is assumed that the canonical ordering of the images in the string is meaningful.
-            See String.check_order to test the assumption. Also consider
+            See String.check_order to test the assumption. Also consider to use MSM reweighting.
 
         '''
         import msmtools
-        RT = 1.985877534E-3 * T  # kcal/mol
-        c = self.count_matrix(f=f, subdir_init=subdir_init, order=order, curve_defining_string=curve_defining_string)
-        t = msmtools.estimation.tmatrix(c)
-        pi = msmtools.analysis.stationary_distribution(t)
-        return -RT * np.log(pi)
+        from .util import IDEAL_GAS_CONSTANT
+        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
+        c = self.count_matrix(subdir=subdir, subdir_init=subdir_init, fields=fields, centers=centers)
+        cset = msmtools.estimation.largest_connected_set(c, directed=True)
+        t_cset = msmtools.estimation.tmatrix(c[cset, :][:, cset])
+        pi_cset = msmtools.analysis.stationary_distribution(t_cset)
+        pi = np.zeros(c.shape[0])
+        pi[cset] = pi_cset
+        if return_pi:
+            return pi
+        else:
+            return -RT * np.log(pi)
+        # TODO: implement reweighting ... ; pass in some field
+        # for every frame get (cluster id, observable); just for final or for final and initial data?
+
+    def all_colvars(self, subdir='colvars', fields=All):
+        r'''For all final swarm points from all swarms, return colvars.'''
+        all_cv = []
+        for im in self.images_ordered:
+            all_cv.append(im.colvars(subdir=subdir, fields=fields).as2D(fields))
+        return all_cv
+
+    def msm_reweighting_factors(self, subdir='colvars', subdir_init='colvars_init', fields=All, centers='means'):
+        r'''Compute reweighting factors that reweight simulation frames towards the equilibrium distribution.
+
+        Note
+        ----
+        w = s.msm_reweighting_factors(fields=['X', 'Y'])  # estimate MSM in X,Y space
+        o = s.all_colvars(fields=['X'])
+        plt.hist(o, weights=w)  # only show the equilibrium histogram of X
+        '''
+        import msmtools
+        assignments = self.microstate_assignments(subdir=subdir, fields=fields, centers=centers)
+        #assignments_0 = self.microstate_assignments(subdir=subdir_init, fields=fields, centers=centers)
+        c = self.count_matrix(subdir=subdir, subdir_init=subdir_init, fields=fields, centers=centers)
+        cset = msmtools.estimation.largest_connected_set(c, directed=True)
+        t_cset = msmtools.estimation.tmatrix(c[cset, :][:, cset])
+        pi_cset = msmtools.analysis.stationary_distribution(t_cset)
+        cnt_cset = c.sum(axis=0)[cset]
+        mu = np.zeros(c.shape[0])
+        for j, i in enumerate(cset):
+            mu[i] = pi_cset[j] / cnt_cset[j]
+        return [mu[assignments_image] for assignments_image in assignments]
 
     def _curvature_errors_analytical(self):
         fields = self.images_ordered[0].fields
@@ -1182,7 +1703,7 @@ class String(object):
         # TODO: also return a regularized string as a list of nodes (can be used for US or string evolution)
 
     def _curvature_errors_sampling(self, n_samples=100):
-        from tqdm.auto import tqdm
+        from tqdm import tqdm
         fields = self.images_ordered[0].fields
         n = len(self.images_ordered) - 2
         chi = np.zeros(n) + np.nan
@@ -1260,7 +1781,7 @@ class String(object):
         # TODO: return what kind of object? # TODO: have some simpler container class that does not have pointer to previous simulation...
 
     def smoothing_error(self, filter_width=3, n_samples=100):
-        from tqdm.auto import tqdm
+        from tqdm import tqdm
         from .reparametrization import curvatures
         chi_samples = []
         for _ in tqdm(range(n_samples)):
@@ -1278,17 +1799,18 @@ def parse_commandline(argv=None):
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--wait', help='wait for job completion', default=False, action='store_true')
     parser.add_argument('--dry', help='dry run', default=False, action='store_true')
-    parser.add_argument('--local', help='run locally (in this machine)', default=False, action='store_true')
+    parser.add_argument('--local', help='run locally (on this machine)', default=False, action='store_true')
     parser.add_argument('--re', help='run replica exchange simulations', default=False, action='store_true')
     parser.add_argument('--cpus_per_replica', help='number of CPU per replica (only for multi-replica jobs with NAMD)', default=32)
     parser.add_argument('--iteration', help='do not propagate current string but a past iteration', default=None)
     parser.add_argument('--branch', help='select branch', default='AZ')
+    parser.add_argument('--max_workers', help='number of concurrent workers, important if running locally', default=1)
     #parser.add_argument('--distance', help='distance between images', default=1.0)
     #parser.add_argument('--boot', help='bootstrap computation', default=False, action='store_true')
     args = parser.parse_args(argv)
 
     options=  {'wait': args.wait, 'run_locally': args.local, 'dry': args.dry, 're': args.re,
-               'cpus_per_replica': args.cpus_per_replica, 'branch': args.branch}
+               'cpus_per_replica': args.cpus_per_replica, 'branch': args.branch, 'max_workers': int(args.max_workers)}
     if args.iteration is not None:
         options['iteration'] = int(args.iteration)
     else:
@@ -1296,38 +1818,33 @@ def parse_commandline(argv=None):
     return options
 
 
-#def init(image_distance=1.0, argv=None):
-#    String.from_scratch(image_distance=image_distance).write_yaml()
+def rounds(s, n):
+    for i in range(n):
+        # bisect to cure bad overlap
+        print('closing gaps in string', s.iteration)
+        for j in range(3):  # TODO: convert this into a while loop with bottleneck criterion
+            s.bisect_and_lift(order='shortest', overlap='units', write=True)
+            s.propagate(wait=True, run_locally=True)
+        # propagation
+        print('evolving the string', s.iteration)
+        next_s = s.evolve_kinetically(write=True)
+        next_s.propagate(wait=True, run_locally=True)
+        s = next_s
+    return s
 
+
+def rounds_same_load(s, n):
+    for _ in range(n):
+        s_new = s.evolve(n_nodes=len(s) + 1)
+        s_new.write_yaml()
+        s_new.propagate(wait=True, run_locally=True)
+        s_new.bisect_and_lift(overlap='units', write=True)
+        s_new.propagate(wait=True, run_locally=True)
+        s = s_new
+    return s
 
 def load(branch='AZ', offset=-1):
-    'Find the latest iteration of the string in $STRING_SIM_ROOT/strings/ and recover it from the yaml file.'
-    if offset >= 0:
-        raise ValueError('offset can\'t be zero or positive.')
-    folder = root() + '/strings/'
-    iteration = float('-inf')
-    for entry in os.listdir(folder):
-        splinters = entry.split('_')
-        if len(splinters) == 2:
-            folder_branch, folder_iteration = splinters 
-            if folder_branch == branch and folder_iteration.isdigit():
-                iteration = max([iteration, int(folder_iteration)])
-    if iteration > float('-inf'):
-        print('Highest current iteration is %d. Loading iteration %d' % (iteration, iteration + 1 + offset))
-        return String.load(branch=branch, iteration=iteration + 1 + offset)
-    else:
-        raise RuntimeError('No string with branch identifier "%s" found' % branch)
-
-
-#def list_branches():
-#    branches = []
-#    folder = root() + '/strings/'
-#    for entry in os.listdir(folder):
-#        splinters = entry.split('_')
-#        if len(splinters) == 2:
-#            folder_branch, folder_iteration = splinters
-#            folder_iteration.isdigit():
-#                iteration = max([iteration, int(folder_iteration)])
+    return String.load(branch=branch, offset=offset)
 
 
 def main(argv=None):
@@ -1338,12 +1855,12 @@ def main(argv=None):
     elif options['iteration'] < 0:
         string = load(branch=options['branch'], offset=options['iteration'])
     else:
-        string = String.load(branch=options['branch'], iteration=options['iteration'])
+        string = String.load(branch=options['branch'], offset=options['iteration'])
     print(string.branch, string.iteration, ':', string.ribbon(run_locally=options['run_locally']))
 
     if not string.propagated:
         string = string.propagate(wait=options['wait'], run_locally=options['run_locally'], dry=options['dry'],
-                                  cpus_per_replica=options['cpus_per_replica'])
+                                  cpus_per_replica=options['cpus_per_replica'], max_workers=options['max_workers'])
     #else:  # reparametrize and propagate at least once
     #    string = string.bisect_and_propagate_util_connected(run_locally=options['run_locally']).reparametrize().propagate(wait=options['wait'], run_locally=options['run_locally'])
 

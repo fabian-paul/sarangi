@@ -4,10 +4,13 @@ import errno
 import os
 
 
-__all__ =['find', 'mkdir', 'load_structured', 'dump_structured', 'structured_to_flat', 'flat_to_structured',
-          'recarray_average', 'recarray_difference', 'recarray_vdot', 'recarray_norm', 'AllType', 'All', 'root',
-          'is_sim_id']
+__all__ =['find', 'mkdir', 'dict_to_structured', 'structured_to_dict', 'structured_to_flat', 'flat_to_structured',
+          'recarray_average', 'recarray_difference', 'recarray_vdot', 'recarray_norm', 'recarray_allclose',
+          'AllType', 'All', 'root', 'is_sim_id', 'IDEAL_GAS_CONSTANT', 'DEFAULT_TEMPERATUE']
 
+
+IDEAL_GAS_CONSTANT = 1.985877534E-3  # in kcal/mol/K
+DEFAULT_TEMPERATUE = 303.15
 
 def abspath_with_symlinks(p):
     if 'PWD' in os.environ:
@@ -18,7 +21,16 @@ def abspath_with_symlinks(p):
 
 
 def root():
-    'Return absolute path to the root directory of the project.'
+    r'''Return absolute path to the root directory of the project.
+
+        Notes
+        -----
+        When tracing up the directory tree, this routine will respect the
+        environment variable $PWD which may contain a path that contains
+        symlinks to directories. Tracing up the directory tree might therefore
+        follow the symlinks backwards, if you navigated to the current
+        directory by following a symlink.
+    '''
     if 'STRING_SIM_ROOT' in os.environ:
         return os.environ['STRING_SIM_ROOT']
     else:  # follow CWD up directory by directory and search for the .sarangirc file
@@ -52,9 +64,11 @@ def find(items, keys):
 
 
 def mkdir(folder):
+    if len(folder) == 0:
+        return
     try:
         os.makedirs(folder)
-    except OSError as e:
+    except (OSError, FileNotFoundError) as e:
         if e.errno != errno.EEXIST:
             raise
 
@@ -66,7 +80,7 @@ def length_along_segment(a, b, x, clamp=True):
     return s
 
 
-def load_structured(config):
+def dict_to_structured(config):
     'Convert dictionary with numerical values to numpy structured array'
     dtype_def = []
     for name, value in config.items():
@@ -85,7 +99,7 @@ def load_structured(config):
     return array
 
 
-def dump_structured(array):
+def structured_to_dict(array):
     'Convert numpy structured array to python dictionary'
     config = {}
     for n in array.dtype.names:
@@ -108,7 +122,7 @@ def exactly_2d(ary):
     elif ary.ndim == 2:
         return ary 
     else:
-        raise ValueError('Cannot convert array to 2D.')
+        raise ValueError('Cannot convert array to 2D. ary.ndim is ' + str(ary.ndim))
 
 
 def structured_to_flat(recarray, fields=None):
@@ -200,6 +214,25 @@ def recarray_norm(a, rmsd=False):
         return s**0.5
 
 
+def recarray_dims(x):
+    res = []
+    for n in x.dtype.names:
+        shape = x.dtype.fields[n][0].shape
+        if len(shape) == 0:
+            res.append(1)
+        else:
+            res.append(shape[0])
+    return res
+
+
+def recarray_allclose(a, b):
+    if not isinstance(a, np.ndarray) or not isinstance(b, np.ndarray):
+        return a==b
+    if sorted(a.dtype.names) != sorted(b.dtype.names):
+        return False
+    return all([np.allclose(a[field], b[field]) for field in a.dtype.names])
+
+
 class AllType(object):
     'x in All == True for any x'
     def __contains__(self, key):
@@ -252,3 +285,69 @@ def nodes_to_trajs(string, fname='nodes.pdb', fields=All):
             f.write(frame)
 
     return frames
+
+
+def shortest_path(cost_matrix, start, stop):
+    import scipy.sparse.csgraph
+    _, pred = scipy.sparse.csgraph.dijkstra(cost_matrix, directed=False, indices=start, return_predecessors=True)
+    path = [stop]
+    u = stop
+    while pred[u] != start:
+        u = pred[u]
+        if u < 0:
+            raise ValueError('Graph is disconneted, could not find shortest path from %s to %d.' % (start, stop))
+        path.append(u)
+    return [start] + path[::-1]
+
+
+def widest_path(matrix, start=0, stop=-1):
+    import scipy.sparse.csgraph
+    if matrix.shape[0] != matrix.shape[1]:
+        raise ValueError('Matrix must be square.')
+    mst = -scipy.sparse.csgraph.minimum_spanning_tree(-matrix)
+    _, pred = scipy.sparse.csgraph.depth_first_order(mst, i_start=start, directed=False, return_predecessors=True)
+    # convert list of predecessors to path
+    stop = np.arange(matrix.shape[0])[stop]
+    path = [stop]
+    u = stop
+    while pred[u] != start:
+        u = pred[u]
+        if u < 0:
+            raise ValueError('Graph is disconneted, could not find shortest path from %s to %d.' % (start, stop))
+        path.append(u)
+    path = [start] + path[::-1]
+    return path
+
+
+def bisect_decreasing(func, a, b, level=0., max_iter=50, tol=1.E-5, return_y=False):
+    a_, b_ = a, b
+    a = min(a_, b_)
+    b = max(a_, b_)
+    for _ in range(max_iter):
+        fa = func(a) - level
+        if fa > 0:
+            break
+        else:
+            a *= 0.5
+    for _ in range(max_iter):
+        fb = func(b) - level
+        if fb < 0:
+            break
+        else:
+            b *= 2
+    if not fa > 0 > fb: # (fa < 0 < fb): #or
+        raise RuntimeError('Initial interval for bisection does not bracket the level that you are searching for.')
+    for _ in range(max_iter):
+        c = 0.5*(a + b)
+        y = func(c) - level
+        #print('y', y)
+        if y == 0 or 0.5*(b - a) <= tol:
+            if return_y:
+                return c, y
+            else:
+                return c
+        if np.sign(y) == np.sign(func(a) - level):
+            a = c
+        else:
+            b = c
+    raise RuntimeError('Bisection could not find x such that {func}(x)={level}'.format(func=func, level=level))

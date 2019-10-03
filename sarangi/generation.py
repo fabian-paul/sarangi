@@ -77,7 +77,7 @@ def collect_frames(fnames_traj_in, fname_traj_out, traj_idx_unordered, frame_idx
     top = mdtraj.load_topology(top_fname)
 
     #
-    order = np.argsort(traj_idx_unordered, kind='stable')
+    order = np.argsort(traj_idx_unordered, kind='mergesort')
     traj_idx_ordered = traj_idx_unordered[order]
     frame_idx_ordered = frame_idx_unordered[order]
 
@@ -194,10 +194,11 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
         cvs_linear = kmeans.cluster_centers_
 
     # select images using subtropical shortest path algorithm
-    print('finding connected path...')
     if lambada is None:
+        print('finding connected path...')
         image_indices_linear = denoise(cvs_linear, max_images=max_images, min_rmsd=min_rmsd)
     else:
+        print('finding connected path (in expert mode) ...')
         image_indices_linear, _ = denoise_once(cv=cvs_linear, lambada=lambada)
     #centers = cvs_linear[image_indices_linear, :]
     print('Length of path is %d. [%d, ..., %d]' % (len(image_indices_linear), image_indices_linear[0], image_indices_linear[-1]))
@@ -206,6 +207,7 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     util.mkdir('{root}/strings/{branch}_000/'.format(root=util.root(), branch=branch))
     if not compress:
         # ... either as complete trajectories
+        print('Importing frames in compressed from. Note that if the collective variables space is changed later, reimporting might be needed.')
         for traj_index, traj_fname in enumerate(traj_fnames):
             ext = os.path.splitext(traj_fname)[1]
             fname_dest = '{root}/strings/{branch}_000/{branch}_000_000_{traj_index:03d}.{ext}'.format(root=util.root(),
@@ -255,7 +257,7 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
             print('structured:', util.structured_to_flat(node, fields=real_fields))
             print('unstructured:', cvs_linear[image_index_linear, np.newaxis, :])
             raise RuntimeError('The structured and the unstructured representations of the CV data became inconsistent. This should never happen. Stopping plan generation.')
-        spring = util.load_structured({name: 10. for name in real_fields})
+        spring = util.dict_to_structured({name: 10. for name in real_fields})
         im = image.CompoundImage(image_id='{branch}_001_{index:03d}_000'.format(branch=branch, index=running_index),
                                  previous_image_id='{branch}_000_000_{traj_index:03d}'.format(branch=branch, traj_index=traj_index_out),
                                  previous_frame_number=frame_index_out, group_id=None, node=node, spring=spring, swarm=swarm)
@@ -263,7 +265,7 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     # save String object / plan file to disk
     time = datetime.datetime.strftime(datetime.datetime.now(), '%Y/%m/%d %H:%M')
     new_string.write_yaml(
-        message='{time}: New string from initialized from trajectory "{traj_fname}".'.format(time=time, traj_fname=traj_fnames[0]))
+        message='{time}: New string from initialized from trajectory "{traj_fname}" ...'.format(time=time, traj_fname=traj_fnames[0]))
     return new_string
 
 
@@ -319,13 +321,13 @@ def gss(f, a, b, tol=1e-3, goal=float('-inf'), max_iter=float('inf'), verbose=Fa
             return c, aux_c, hist_x, hist_f, hist_cond, hist_aux
         if fd <= goal and cond_d:
             print('Reached precision goal.')
-            return d, aux_d, hist_x, hist_f, hist_cont, hist_aux
+            return d, aux_d, hist_x, hist_f, hist_cond, hist_aux
         # This is the golden section algorithm with a single modification:
         # For large x, we will typically violate the constraint. The
         # violation can be resolved by decreasing x. Therefore we select
         # the left interval, if the point in the middle of the right interval
         # is infeasible. That's all. No such reasoning is needed for violations
-        # in the left interval, since we always go further left.
+        # in the left interval, since we can always go further left.
         if fc < fd or not cond_d:  # the "or not cond_d" expression is the modification
             b = d
             hist_x.append(d)
@@ -451,8 +453,11 @@ def self_consistency_compressed(traj_fname, branch, command, fields, cvname, cv_
     return is_ok
 
 
-def parse_args_import_trajectory():
+def parse_args_import_trajectory(argv=None):
     import argparse
+    import sys
+    if argv is None:
+        argv = sys.argv[1:]
 
     parser = argparse.ArgumentParser(description='Make new string by importing trajectory',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -484,7 +489,7 @@ def parse_args_import_trajectory():
     parser.add_argument('trajname', nargs='+', type=str,
                         help='File name of the input trajectory. If more than one name is given, contents is concatenated (in the order of this list)')
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.mother_string is None:
         mother_string = None

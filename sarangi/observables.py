@@ -45,7 +45,9 @@ def main_transform(transform_and_save, cvname='colvars'):
         else:
             sim_id = global_sim_id
         branch, iter_, _, _ = sim_id.split('_')
-        fname_base_out = '%s/observables/%s_%03d/%s/%s' % (root(), branch, int(iter_), args.cvname, sim_id)
+        folder_out = '%s/observables/%s_%03d/%s/' % (root(), branch, int(iter_), args.cvname)
+        mkdir(folder_out)
+        fname_base_out = folder_out + sim_id
         transform_and_save(fname_traj=fname_traj, fname_base_out=fname_base_out, sim_id=sim_id)
 
 
@@ -111,12 +113,12 @@ def main_update(image_id=None, branch=None, iteration=None, ignore_colvars_traj=
     if image_id is not None:
         branch, iteration, _, _ = image_id.split('_')
         iteration = int(iteration)
-        string = String.load(branch=branch, iteration=iteration)
+        string = String.load(branch=branch, offset=iteration)
     else:
         if iteration < 0:  # TODO: refactor loading
             string = load(branch=branch, offset=iteration)
         else:
-            string = String.load(branch=branch, iteration=iteration)
+            string = String.load(branch=branch, offset=iteration)
 
     observables = string.opaque['observables']
 

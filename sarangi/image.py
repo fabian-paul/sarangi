@@ -2,11 +2,11 @@ import numpy as np
 import warnings
 import os
 from .colvars import Colvars
-from .util import load_structured, dump_structured, recarray_difference, recarray_vdot, structured_to_flat, \
+from .util import dict_to_structured, structured_to_dict, recarray_difference, recarray_vdot, structured_to_flat, \
     All, AllType, root
 
 
-__all__ = ['Image', 'CompoundImage', 'CartesianImage', 'load_image', 'interpolate_id']
+__all__ = ['Image', 'CompoundImage', 'CartesianImage', 'load_image', 'interpolate_id', 'find_realization']
 
 
 # name generation routines
@@ -122,7 +122,7 @@ class Image(object):
 
     @property
     def fields(self):
-        'Names of colvars used to define the umbrella center (node)'
+        'Names of colvars used to define the umbrella center (node) or the initial positioning force in swarm-of-trajectories calculations.'
         return list(self.node.dtype.fields)
 
     def __str__(self):
@@ -131,6 +131,7 @@ class Image(object):
     def __eq__(self, other):
         for key in ['image_id', 'previous_image_id', 'previous_frame_number', 'group_id']:
             if self.__dict__[key] != other.__dict__[key]:
+                print('comparison of key', key, 'failed', self.__dict__[key], other.__dict__[key], 'in image', self.image_id)
                 return False
         return True
 
@@ -139,11 +140,12 @@ class Image(object):
         'MD simulation was completed.'
         if os.path.exists(self.base + '.dcd'):
             return True
-        for folder in os.listdir(self.colvar_root):
-            if os.path.exists('%s/%s/%s.colvars.traj' % (self.colvar_root, folder, self.image_id)):
-                return True
-            if os.path.exists('%s/%s/%s.npy' % (self.colvar_root, folder, self.image_id)):
-                return True
+        if os.path.exists(self.colvar_root):
+            for folder in os.listdir(self.colvar_root):
+                if os.path.exists('%s/%s/%s.colvars.traj' % (self.colvar_root, folder, self.image_id)):
+                    return True
+                if os.path.exists('%s/%s/%s.npy' % (self.colvar_root, folder, self.image_id)):
+                    return True
         return False
 
     def _make_job_file(self, env):  # TODO: move into gobal function
@@ -283,19 +285,36 @@ class Image(object):
 
     def overlap_plane(self, other, subdir='colvars', fields=All, indicator='max'):
         'Compute overlap between two distributions from assignment error of a support vector machine trained on the data from both distributions.'
+        # TODO: to support multiple subdirectories, we would have to join multiple colvar array; would need to implement this (like Pyemma's sources-merger)
+        if isinstance(subdir, (list, tuple)):
+            raise NotImplementedError('"plane" overlap was not yer implemented for mutiple subdirectories')
         return self.colvars(subdir=subdir, fields=fields).overlap_plane(other.colvars(subdir=subdir, fields=fields),
                                                                         indicator=indicator)
 
-    def x0(self, subdir='colvars', fields=All):  # TODO: have this as a Colvars object?
-        'Get the initial position for the simualtion in colvar space.'
-        if subdir not in self._x0:
-            branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
-            folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
-                root=root(), branch=branch, iteration=int(iteration))
-            base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
-                branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
-            self._x0[subdir] = Colvars(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
-        return self._x0[subdir]
+    def overlap_3D_units(self, other, subdir='colvars', fields=All, indicator='max'):
+        r'''Computes the minimum overlap over all colvars. Supports multiple observable subdirectories.'''
+        if isinstance(subdir, (list, tuple)):
+            overlaps = []
+            for s in subdir:
+                o = self.colvars(subdir=s, fields=fields).overlap_3D_units(other.colvars(subdir=s, fields=fields),
+                                                                           indicator=indicator)
+                overlaps.append(o)
+            return np.min(overlaps)
+        else:
+            return self.colvars(subdir=subdir, fields=fields).overlap_3D_units(other.colvars(subdir=subdir, fields=fields),
+                                                                               indicator=indicator)
+
+    def x0(self, subdir='colvars', fields=All):  # TODO: have this as a Colvars object? but how?
+        'Get the initial position for the simulation in colvar space.'
+        #if subdir not in self._x0:
+        branch, iteration, id_major, id_minor = self.previous_image_id.split('_')
+        folder = '{root}/observables/{branch}_{iteration:03d}/'.format(
+            root=root(), branch=branch, iteration=int(iteration))
+        base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
+            branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
+        #self._x0[subdir] =
+        return Colvars(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
+        #return self._x0[subdir]
 
     def potential(self, colvars, factor=1.0, out=None):
         'Compute the bias potential parametrized by self.node and self.spring evaluated for all time steps of the colvar trajectory.'
@@ -413,6 +432,19 @@ class Image(object):
     def discretize(self):
         raise NotImplementedError('Not yet implemented.')
 
+    @classmethod
+    def get_fields_non_overlapping(cls, a, b, subdir='colvars', threshold: float=0.1):
+        from .colvars import overlap_svm
+        # TODO: extend to multiple subdirs? (otherwise we could move this into the Colvars class...)
+        x = a.colvars(subdir=subdir)
+        y = b.colvars(subdir=subdir)
+        fields = []
+        for field in set(x.fields) | set(y.fields):
+            o = overlap_svm(x._colvars[field], y._colvars[field])
+            if o < threshold:
+                fields.append(field)
+        return fields
+
 
 class CompoundImage(Image):
     _known_keys = Image._known_keys + ['bias', 'node', 'terminal', 'spring', 'orthogonal_spring']
@@ -433,6 +465,10 @@ class CompoundImage(Image):
         self.colvars_def = colvars_def
         self.bias = 'compound'
 
+    def __hash__(self):
+        # this relies on the fact that image ids are unique ... but what if somebody breaks this rule???
+        return hash(self.image_id)
+
     def copy(self):
         node = self.node.copy() if self.node is not None else None
         if self.spring is None or isinstance(self.spring, float):
@@ -449,14 +485,14 @@ class CompoundImage(Image):
     def load(cls, config, colvars_def):
         known_keys = super(CompoundImage, cls)._known_keys + ['bias', 'node', 'terminal', 'spring', 'orthogonal_spring']
         opaque = {key: config[key] for key in config.keys() if key not in known_keys}
-        node = load_structured(config['node'])
+        node = dict_to_structured(config['node'])
         if 'terminal' in config:
-            terminal = load_structured(config['terminal'])
+            terminal = dict_to_structured(config['terminal'])
         else:
             terminal = None
         if 'spring' in config:
             if isinstance(config['spring'], dict):
-                spring = load_structured(config['spring'])  # named arrays only for "elliptic" bias
+                spring = dict_to_structured(config['spring'])  # named arrays only for "elliptic" bias
             else:
                 spring = config['spring']
         else:
@@ -474,14 +510,14 @@ class CompoundImage(Image):
         config = super(CompoundImage, self).dump()
         config['bias'] = 'compound'
         if self.node is not None:
-            config['node'] = dump_structured(self.node)
+            config['node'] = structured_to_dict(self.node)
         if self.terminal is not None:
-            config['terminal'] = dump_structured(self.terminal)
+            config['terminal'] = structured_to_dict(self.terminal)
         if self.spring is not None:
             if isinstance(self.spring, float):
                 config['spring'] = self.spring
             else:
-                config['spring'] = dump_structured(self.spring)
+                config['spring'] = structured_to_dict(self.spring)
         if self.orthogonal_spring is not None:
             config['orthogonal_spring'] = self.orthogonal_spring
         if self.opaque is not None:
@@ -489,10 +525,12 @@ class CompoundImage(Image):
         return config
 
     def __eq__(self, other):
+        from .util import recarray_allclose
         if not super(CompoundImage, self).__eq__(other):
             return False
         for key in ['node', 'spring', 'terminal', 'orthogonal_spring']:
-            if not np.array_equal(self.__dict__[key], other.__dict__[key]):
+            if not recarray_allclose(self.__dict__[key], other.__dict__[key]):
+                print('comparison of key', key, 'failed', self.__dict__[key], other.__dict__[key], 'in image', self.image_id)
                 return False
         return True
 
@@ -611,14 +649,14 @@ class CartesianImage(Image):
                              'but field "bias: Cartesian" is missing.')
         known_keys = super(CartesianImage, cls)._known_keys + ['bias', 'node', 'terminal', 'spring', 'orthogonal_spring']
         opaque = {key: config[key] for key in config.keys() if key not in known_keys}
-        node = load_structured(config['node'])
+        node = dict_to_structured(config['node'])
         if 'terminal' in config:
-            terminal = load_structured(config['terminal'])
+            terminal = dict_to_structured(config['terminal'])
         else:
             terminal = None
         if 'spring' in config:
             if isinstance(config['spring'], dict):
-                spring = load_structured(config['spring'])  # named arrays only for "elliptic" bias
+                spring = dict_to_structured(config['spring'])  # named arrays only for "elliptic" bias
             else:
                 spring = config['spring']
         else:
@@ -636,9 +674,9 @@ class CartesianImage(Image):
         config = super(CartesianImage, self).dump()
         config['bias'] = 'Cartesian'
         if self.node is not None:
-            config['node'] = dump_structured(self.node)
+            config['node'] = structured_to_dict(self.node)
         if self.terminal is not None:
-            config['terminal'] = dump_structured(self.terminal)
+            config['terminal'] = structured_to_dict(self.terminal)
         if self.spring is not None:
             config['spring'] = self.spring
         if self.orthogonal_spring is not None:
@@ -902,7 +940,7 @@ def compound_string_to_Cartesian_string(string, atom_selection, new_iteration=No
 #             atoms_1 = d['atoms_1']
 #         else:
 #             atoms_1 = None
-#         return cls(x=load_structured(d['node']), atoms_1=atoms_1)
+#         return cls(x=dict_to_structured(d['node']), atoms_1=atoms_1)
 #
 #     def write_colvar(self, prefix='refPositions'):
 #         if self.atoms_1 is not None:

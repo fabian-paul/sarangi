@@ -16,7 +16,7 @@ def path(x, start, stop, param, logspace=True):
     stop : int
         index of desired end point of the path
     param : float
-        Parameter for the distance computation, d(x,y) = exp(...)
+        Parameter for the cost computation, d(x,y) = exp(param*||x - y||) - 1.
 
     Resturns
     --------

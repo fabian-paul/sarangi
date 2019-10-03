@@ -1,0 +1,4 @@
+#!/bin/bash
+{environment}
+set -e
+python $STRING_SIM_ROOT/setup/toymodel.py
