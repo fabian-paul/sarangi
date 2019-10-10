@@ -559,6 +559,9 @@ class String(object):
         '''
         from .util import widest_path, structured_to_dict, dict_to_structured, IDEAL_GAS_CONSTANT, DEFAULT_TEMPERATUE
         from collections import defaultdict
+
+        max_spring_constant = 1000.
+
         if not swarm:
             raise NotImplementedError('evolve_kinetically can be only used with swarm=True')
 
@@ -602,11 +605,11 @@ class String(object):
                 dist = np.linalg.norm(a[f] - b[f])  # not sure if this is a good idea; node distances are too random
                 k = RT / dist**2  # kcal/mol/A^2
                 if f not in new_springs[i] or adjust_springs:
-                    current_spring = new_springs[i][f] if f in new_springs[i] else 0.
-                    new_springs[i][f] = max(current_spring, k)
+                    #current_spring = new_springs[i][f] if f in new_springs[i] else 0.
+                    new_springs[i][f] = min(k, max_spring_constant)
                 if f not in new_springs[i + 1] or adjust_springs:
-                    current_spring = new_springs[i + 1][f] if f in new_springs[i + 1] else 0.
-                    new_springs[i + 1][f] = max(current_spring, k)
+                    #current_spring = new_springs[i + 1][f] if f in new_springs[i + 1] else 0.
+                    new_springs[i + 1][f] = min(k, max_spring_constant)
 
 
         # create the actual string object
@@ -679,6 +682,8 @@ class String(object):
         if not self.is_homogeneous and reparametrize:
             raise RuntimeError('Not all nodes live in exactly the same colvars space. This is not supported by this function.')
 
+        max_spring_constant = 1000.
+
         if update_fields:
             fields = set()
             images_ordered = self.images_ordered
@@ -745,10 +750,10 @@ class String(object):
         for i, (x, y) in enumerate(zip(nodes[0:-1], nodes[1:])):
             for f in real_fields:
                 k = RT / np.linalg.norm(x[f] - y[f])**2
-                current_spring = springs[i][f] if f in springs[i] else 0.
-                springs[i][f] = max(k, current_spring)
-                current_spring = springs[i + 1][f] if f in springs[i + 1] else 0.
-                springs[i + 1][f] = max(current_spring, k)
+                #current_spring = springs[i][f] if f in springs[i] else 0.
+                springs[i][f] = min(k, max_spring_constant)
+                #current_spring = springs[i + 1][f] if f in springs[i + 1] else 0.
+                springs[i + 1][f] = min(k, max_spring_constant)
 
         iteration = self.iteration + 1
         new_string = self.empty_copy(iteration=iteration, previous=self)
@@ -975,9 +980,11 @@ class String(object):
         # find realization, first prepare list of all previous strings
         s = self
         strings_to_search = [s]
-        while s.iteration >= 2:  # lowest string to search is string with index 1
+        n_iterations_crawled = 1
+        while s.iteration >= 2 and n_iterations_crawled < 10:  # lowest string to search is string with index 1
             s = s.previous_string
             strings_to_search.append(s)
+            n_iterations_crawled += 1
         best_image, best_frame, _ = find_realization_in_string(strings=strings_to_search, node=new_node, subdir=subdir)
         new_image_id = interpolate_id(a.image_id, b.image_id, excluded=[im.image_id for im in self.images_ordered])
         new_image = a.__class__(image_id=new_image_id, previous_image_id=best_image.image_id,
