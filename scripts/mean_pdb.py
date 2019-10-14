@@ -14,8 +14,8 @@ def pdb(fname_traj, fname_base_out, sim_id):
     traj = mdtraj.load(fname_traj, top=top, atom_indices=atom_indices)
     frame = traj[0]
     frame.xyz[0, :, :] = np.mean(traj.xyz, axis=0)
-    print(fname_traj, '->', fname_base_out + '.pdb')
-    frame.save_pdb(fname_base_out + '.pdb')
+    print(fname_traj, '->', fname_base_out + '.pdb.gz')
+    frame.save_pdb(fname_base_out + '.pdb.gz')
 
 
 if __name__ == '__main__':

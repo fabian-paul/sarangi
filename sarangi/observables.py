@@ -3,7 +3,7 @@ from . import load, root, is_sim_id, String
 from .util import mkdir
 
 
-def main_transform(transform_and_save, cvname='colvars'):
+def main_transform(transform_and_save, cvname='colvars', opt_kwargs=None):
     r'''Entry point for all scripts that compute collective variables. Defines common command line interface.
 
     :param transform_and_save:
@@ -13,6 +13,10 @@ def main_transform(transform_and_save, cvname='colvars'):
     '''
     import os
     import argparse
+
+    if opt_kwargs is None:
+        opt_kwargs = {}
+
     parser = argparse.ArgumentParser(description='Compute ' + cvname,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
@@ -23,6 +27,9 @@ def main_transform(transform_and_save, cvname='colvars'):
                         help='(in) file name(s) of the trajectory file(s) to be analyzed')
     parser.add_argument('--cvname', metavar='identifier', default=cvname,
                         help='name under which to save results')
+    parser.add_argument('--init', action='store_true',
+                        help='process intial swarm data; else process final data')
+
 
     args = parser.parse_args()
 
@@ -37,18 +44,31 @@ def main_transform(transform_and_save, cvname='colvars'):
 
     for fname_traj in args.trajectories:
         if '$' in global_sim_id or global_sim_id == '':
+            # infer form file name
             base_name = os.path.split(os.path.splitext(fname_traj)[0])[1]
+            if base_name[-5:]=='_init':
+                 base_name = base_name[0:-5]
+                 init = True
+            else:
+                 init = False
             if is_sim_id(base_name):
                 sim_id = base_name
             else:
                 raise ValueError('Could not infer image id from trajectory name %s.' % base_name)
         else:
             sim_id = global_sim_id
+            init = args.init
+        if init:
+            assert 'init' in fname_traj
+
         branch, iter_, _, _ = sim_id.split('_')
-        folder_out = '%s/observables/%s_%03d/%s/' % (root(), branch, int(iter_), args.cvname)
+        if init:
+            folder_out = '%s/observables/%s_%03d/%s_init/' % (root(), branch, int(iter_), args.cvname)
+        else:
+            folder_out = '%s/observables/%s_%03d/%s/' % (root(), branch, int(iter_), args.cvname)
         mkdir(folder_out)
         fname_base_out = folder_out + sim_id
-        transform_and_save(fname_traj=fname_traj, fname_base_out=fname_base_out, sim_id=sim_id)
+        transform_and_save(fname_traj=fname_traj, fname_base_out=fname_base_out, sim_id=sim_id, **opt_kwargs)
 
 
 def parse_args_update(argv=None):
@@ -75,15 +95,28 @@ def parse_args_update(argv=None):
     return options
 
 
-def _process_trajectory(trajectory_fname, image, sim_root, command, observable_name, ignore_colvars_traj):
+def _process_trajectory(trajectory_fname, image, sim_root, command, observable_name, ignore_colvars_traj, init):
     import os
     if os.path.exists(trajectory_fname):
-        folder_out = \
-            '{root}/observables/{branch}_{iteration:03d}/{name}/'.format(root=sim_root,
-                                                                         name=observable_name,
-                                                                         branch=image.branch,
-                                                                         iteration=image.iteration)
+        if init:
+            folder_out = \
+                '{root}/observables/{branch}_{iteration:03d}/{name}_init/'.format(root=sim_root,
+                                                                                  name=observable_name,
+                                                                                  branch=image.branch,
+                                                                                  iteration=image.iteration)
+        else:
+            folder_out = \
+                '{root}/observables/{branch}_{iteration:03d}/{name}/'.format(root=sim_root,
+                                                                             name=observable_name,
+                                                                             branch=image.branch,
+                                                                             iteration=image.iteration)
+
         fname_base_out = folder_out + image.image_id
+
+        if init:
+           init_arg = '--init'
+        else:
+           init_arg = ''
 
         print('checking', fname_base_out, end=' ')
         if os.path.exists(fname_base_out + '.npy') or os.path.exists(fname_base_out + '.pdb') or (
@@ -93,10 +126,11 @@ def _process_trajectory(trajectory_fname, image, sim_root, command, observable_n
         else:
             print('not found; making file')
             full_command = \
-                '{command} --id {image_id} --cvname {name} {trajectory}'.format(command=command,
-                                                                                image_id=image.image_id,
-                                                                                name=observable_name,
-                                                                                trajectory=trajectory_fname)
+                '{command} --id {image_id} --cvname {name} {init_arg} {trajectory}'.format(command=command,
+                                                                                           image_id=image.image_id,
+                                                                                           name=observable_name,
+                                                                                           init_arg=init_arg,
+                                                                                           trajectory=trajectory_fname)
 
             print('running', full_command)
             mkdir(folder_out)
@@ -113,12 +147,8 @@ def main_update(image_id=None, branch=None, iteration=None, ignore_colvars_traj=
     if image_id is not None:
         branch, iteration, _, _ = image_id.split('_')
         iteration = int(iteration)
-        string = String.load(branch=branch, offset=iteration)
-    else:
-        if iteration < 0:  # TODO: refactor loading
-            string = load(branch=branch, offset=iteration)
-        else:
-            string = String.load(branch=branch, offset=iteration)
+
+    string = String.load(branch=branch, offset=iteration)
 
     observables = string.opaque['observables']
 
@@ -129,8 +159,8 @@ def main_update(image_id=None, branch=None, iteration=None, ignore_colvars_traj=
                 # TODO: have other file extensions than dcd; where to save this? Or just try a bunch of different formats xtc/nc/dcd?
                 _process_trajectory(trajectory_fname=image.base + '.dcd', sim_root=sim_root,
                                     observable_name=observable['name'],
-                                    command=observable['command'], image=image, ignore_colvars_traj=ignore_colvars_traj)
+                                    command=observable['command'], image=image, ignore_colvars_traj=ignore_colvars_traj, init=False)
                 # process the *_init.dcd file if it exists
                 _process_trajectory(trajectory_fname=image.base + '_init.dcd', sim_root=sim_root,
-                                    observable_name=observable['name'] + '_init',
-                                    command=observable['command'], image=image, ignore_colvars_traj=ignore_colvars_traj)
+                                    observable_name=observable['name'],
+                                    command=observable['command'], image=image, ignore_colvars_traj=ignore_colvars_traj, init=True)
