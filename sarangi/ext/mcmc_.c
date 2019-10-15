@@ -1,6 +1,8 @@
 #include <math.h>
 #include <stdlib.h>
 
+extern double erand48(unsigned short xsubi[3]);
+
 static float bistable_potential(float x, float y)
 {
     return -exp(-(x-1)*(x-1) - y*y) - exp(-(x+1)*(x+1) - y*y) \
