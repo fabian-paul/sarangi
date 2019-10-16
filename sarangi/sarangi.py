@@ -12,7 +12,7 @@ from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 from .colvars import Colvars
 from .image import Image, load_image, interpolate_id
 from .queuing import *
-from deprecated import deprecated
+#from deprecated import deprecated
 
 # TODO: better handling of "all" fields: this is currently in bad shape
 # TODO: find a better way to handle the "step" column in NAMD covlar files
@@ -247,7 +247,7 @@ class String(object):
                 return False
         return True
 
-    @deprecated
+    #@deprecated
     def discretize(self, points, states_per_arc=100):
         # TODO first check compatibility with path (fields)
         from .util import pairing
@@ -1089,7 +1089,7 @@ class String(object):
         Order of images in the retuned array/ matrix is the same as in self.images_ordered.
         '''
         from tqdm import tqdm
-        real_fields = self.images_ordered[0].colvars(fields=fields).fields
+        real_fields = self.images_ordered[0].colvars(subdir=subdir, fields=fields).fields
         ids = []
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
