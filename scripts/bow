@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 import sys
 
+err_msg = 'Must be one of "run", "obs", "overlap", or "import".'
+
 if len(sys.argv) < 2:
-    raise ValueError('No command selected. Must be one of "run", "obs", or "import".')
+    raise ValueError('No command selected. ' + err_msg)
 
 if sys.argv[1] == 'import':
     from sarangi.generation import import_trajectory, parse_args_import_trajectory
@@ -13,5 +15,8 @@ elif sys.argv[1] == 'obs':
 elif sys.argv[1] == 'run':
     from sarangi import main
     main(argv=sys.argv[2:])
+elif sys.argv[1] == 'overlap':
+    from sarangi.overlap import main_overlap, parse_args_overlap
+    main_overlap(**parse_args_overlap(argv=sys.argv[2:]))
 else:
-    raise ValueError('Unknown command %s. Must be one of "run", "obs", or "import".')
+    raise ValueError('Unknown command %s. ' + err_msg)
