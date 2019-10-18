@@ -47,7 +47,7 @@ def overlap_svm(X_self, X_other, indicator='max', return_classifier=False):
 class Colvars(object):
     # TODO: should we unify this with Pyemma?
     def __init__(self, folder, base, fields=All, ignore_step_column=True):
-        'Load file from folder/base(.npy|.colvars.traj|.pdb)'
+        'Load file from folder/base(.npy|.colvars.traj|.pdb|.pdb.gz)'
         self._mean = None
         #self._var = None
         self._cov = None
@@ -63,6 +63,9 @@ class Colvars(object):
             self._type = 'colvars.traj'
         elif os.path.exists(fname + '.pdb'):
             self._colvars = Colvars.load_pdb_traj(fname + '.pdb', selection=fields)
+            self._type = 'pdb'
+        elif os.path.exists(fname + '.pdb.gz'):
+            self._colvars = Colvars.load_pdb_traj(fname + '.pdb.gz', selection=fields)
             self._type = 'pdb'
         else:
             raise FileNotFoundError('No progress coordinates / colvar file %s found.' % fname)

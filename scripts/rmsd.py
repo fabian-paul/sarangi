@@ -99,7 +99,7 @@ def compute_rmsd(fname_traj, sim_id, fname_top, cv_name, centers, springs, indic
 
 
 if __name__ == '__main__':
-    # TODO: eventually the set of all biases wil be larger and can involve many string itertations
+    # TODO: eventually the set of all biases wil be larger and can involve many string iterations
     import argparse
     parser = argparse.ArgumentParser(description='compute isotropic RMSD order parameter / colvar',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
