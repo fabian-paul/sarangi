@@ -1,0 +1,53 @@
+proc lmap {_var list body} {
+    upvar 1 $_var var
+    set res {}
+    foreach var $list {lappend res [uplevel 1 $body]}
+    set res
+}
+
+proc highlight_beta { args } {
+  global highlight_repname
+  global highlight_extra_selection
+  set timestep [molinfo top get frame]
+  set files [lsort [glob "*.pdb"]]
+  set current_file [lindex $files $timestep]
+
+  set fp [open $current_file r]
+  set file_data [read $fp]
+  close $fp
+  set data [split $file_data "\n"]
+  set selection {}
+  foreach line $data {
+     set atom [string range $line 0 3]
+     if {$atom != "ATOM"} { continue }
+     set index [string range $line 6 11]
+     set beta [ string range $line 60 66]
+     if {$beta == 1.0} {
+        # puts "appending $index"
+        lappend selection $index
+     } else {
+       if {$beta != 0.0} { 
+         puts "something went wrong: $index $beta"
+         puts "$line"
+       }
+     }
+  }
+  set selection [lmap x $selection {expr $x - 1}]
+  set selection [join $selection " "]
+  # puts "$highlight_extra_selection index $selection"
+  # puts [mol repindex top $highlight_repname]
+  mol modselect [mol repindex top $highlight_repname] top "$highlight_extra_selection index $selection"
+}
+
+proc init_highlight {{extra_selection "(same residue as (within 4 of (resname IMA) or resname IMAT)) and"}} {
+  global highlight_repname
+  global highlight_extra_selection
+  set id [molinfo top get numreps]
+  mol addrep top
+  mol modstyle $id top Licorice
+  mol modselect $id top "none"
+  set highlight_repname [mol repname top $id]
+  upvar vmd_frame vmd_frame
+  trace variable vmd_frame(0) w highlight_beta
+  set highlight_extra_selection $extra_selection
+}
