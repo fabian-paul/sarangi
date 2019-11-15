@@ -3,9 +3,10 @@ import os
 import warnings
 from .util import All, AllType, structured_to_flat, length_along_segment, exactly_2d, recarray_dims
 
-__all__ = ['Colvars']
+__all__ = ['Colvars', 'overlap_svm']
 
-# TODO: this could be parallelized over the different pairs of images
+
+# TODO: move to some other subpackage
 def overlap_svm(X_self, X_other, indicator='max', return_classifier=False):
     import sklearn.svm
     X_self = exactly_2d(X_self)

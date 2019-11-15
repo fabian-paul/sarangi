@@ -15,6 +15,8 @@ def interpolate_id(s, z, excluded):
     excluded_int = []
     for id_ in excluded:
         _, _, a, b = id_.split('_')
+        if len(a) != 3 or len(b) != 3:
+            raise ValueError('Only three-digit minor/major versons are currently supported.')
         excluded_int.append(int(a + b))  # represent as six-digit integers  # TODO: make sure that's really six digits...
 
     branch, iter_, a, b = s.split('_')

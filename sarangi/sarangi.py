@@ -556,7 +556,7 @@ class String(object):
             TODO: Future generation of this software should not only find the single widest path
             to propagate but some collection of dominant paths.
         '''
-        from .util import widest_path, structured_to_dict, dict_to_structured, IDEAL_GAS_CONSTANT, DEFAULT_TEMPERATUE
+        from .util import widest_path, structured_to_dict, dict_to_structured, IDEAL_GAS_CONSTANT, DEFAULT_TEMPERATURE
         from collections import defaultdict
 
         max_spring_constant = 1000.
@@ -598,7 +598,7 @@ class String(object):
         # Compute the distance between neighbors and set spring constant accordingly, sigma=delta.
         # If adjust springs is False, only fill in missing spring constants.
         new_springs = [structured_to_dict(im.spring) for im in images_to_evolve]
-        RT = IDEAL_GAS_CONSTANT * DEFAULT_TEMPERATUE  # kcal/mol
+        RT = IDEAL_GAS_CONSTANT * DEFAULT_TEMPERATURE  # kcal/mol
         for i, (a, b) in enumerate(zip(new_nodes[0:-1], new_nodes[1:])):
             for f in set(a.dtype.names) & set(b.dtype.names):  # only adjust springs for which we can compute the distance between (augmented) nodes
                 dist = np.linalg.norm(a[f] - b[f])  # not sure if this is a good idea; node distances are too random
@@ -892,7 +892,13 @@ class String(object):
         new_images = []
         bottlenecks = self.bottlenecks(subdirs=subdirs, overlap=overlap, order=order, threshold=threshold, fields=fields,
                                        ignore_missing=True)
+        # bottlencks must be unique
+        L = len(self)
+        bottlenecks_coded = [i.seq + j.seq*L for i, j in bottlenecks]
+        if len(np.unique(bottlenecks_coded)) != len(bottlenecks_coded):
+            raise Exception('Internal inconsistency error: bottlenecks are not unique.')
         for a, b in bottlenecks:
+            print('Adding new image between', a.image_id, 'and', b.image_id)
             new_image = self.bisect_and_lift_at(a, b, insert=False, threshold=threshold)
             new_images.append(new_image)
         for im in new_images:
@@ -1834,7 +1840,7 @@ def rounds(s, n):
         # propagation
         print('evolving the string', s.iteration)
         next_s = s.evolve_kinetically(write=True)
-        next_s.propagate(wait=True, run_locally=True)
+        next_s.propagate(wait=True, run_locally=True, max_workers=8)
         s = next_s
     return s
 

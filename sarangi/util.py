@@ -6,11 +6,11 @@ import os
 
 __all__ =['find', 'mkdir', 'dict_to_structured', 'structured_to_dict', 'structured_to_flat', 'flat_to_structured',
           'recarray_average', 'recarray_difference', 'recarray_vdot', 'recarray_norm', 'recarray_allclose',
-          'AllType', 'All', 'root', 'is_sim_id', 'IDEAL_GAS_CONSTANT', 'DEFAULT_TEMPERATUE']
+          'AllType', 'All', 'root', 'is_sim_id', 'IDEAL_GAS_CONSTANT', 'DEFAULT_TEMPERATURE']
 
 
 IDEAL_GAS_CONSTANT = 1.985877534E-3  # in kcal/mol/K
-DEFAULT_TEMPERATUE = 303.15
+DEFAULT_TEMPERATURE = 303.15
 
 def abspath_with_symlinks(p):
     if 'PWD' in os.environ:

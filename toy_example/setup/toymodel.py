@@ -194,6 +194,7 @@ if __name__=='__main__':
     colvars_init = resolve(args.colvars_init)
 
     if seed is not None:
+        print('random seed', seed % (2**32 - 1))
         np.random.seed(seed % (2**32 - 1))
 
     initial_points = np.zeros(shape=(swarm_size, DEFAULT_N_ATOMS, 2))
@@ -220,8 +221,8 @@ if __name__=='__main__':
             if args.mueller:
                 final_points[i, 0, :] = propagate(frame[0, 0], frame[0, 1], int(args.steps), mueller_potential)
             else:
-                final_points[i, 0, :] = propagate_bistable(frame[0, 0], frame[0, 1], int(args.steps))
-                #final_points[i, 0, :] = propagate(frame[0, 0], frame[0, 1], int(args.steps), bistable_potential)
+                #final_points[i, 0, :] = propagate_bistable(frame[0, 0], frame[0, 1], int(args.steps))
+                final_points[i, 0, :] = propagate(frame[0, 0], frame[0, 1], int(args.steps), bistable_potential)
 
     # add orthogonal noisy dynamics (we can do it here after the dynamics, beause it's completely independent)
     if not args.init:
