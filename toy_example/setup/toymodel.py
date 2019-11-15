@@ -32,7 +32,7 @@ def to_structured(data: np.ndarray, separate: bool=True) -> np.ndarray:
     if separate:
         dim = data.shape[2]
         alphabet = ['X', 'Y'] + [chr(i) for i in range(ord('a'), ord('z') + 1)]
-        dtype = np.dtype([(alphabet[i], np.float32, 1) for i in range(n_atoms*dim)])
+        dtype = np.dtype([(alphabet[i], np.float32) for i in range(n_atoms*dim)])
         structured = np.core.records.fromarrays([data[:, i, j] for i in range(n_atoms) for j in range(dim)] , dtype=dtype)
     else:
         alphabet = ['X'] + [chr(i) for i in range(ord('a'), ord('z') + 1)]

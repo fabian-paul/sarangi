@@ -154,7 +154,7 @@ class Colvars(object):
             # print(name, 'is in selection?', name in selection)
             if name in selection:
                 if dim == 1:
-                    dtype_def.append((name, np.float64, 1))
+                    dtype_def.append((name, np.float64))
                 else:
                     dtype_def.append((name, np.float64, dim))
         #print('dtype_def is', dtype_def)
