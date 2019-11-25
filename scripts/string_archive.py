@@ -68,7 +68,7 @@ def store(fname_trajectory, fname_colvars_traj, sim_id):
     shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
 
 
-def extract(image, fname_dest_coor, fname_dest_box, top, number=-1):
+def extract(image, fname_dest_coor, fname_dest_box, nobox, top, number=-1):
     if isinstance(image, sarangi.image.Image):
         prev_id = image.previous_image_id
         frame_index = image.previous_frame_number
@@ -85,7 +85,8 @@ def extract(image, fname_dest_coor, fname_dest_box, top, number=-1):
         frame_index = number  # overwrite plan information by user selection
     frame = mdtraj.load_frame(fname_dcd, index=frame_index, top=top)
     save_coor(frame, fname_dest_coor)
-    save_xsc(frame, fname_dest_box)
+    if not nobox:
+        save_xsc(frame, fname_dest_box)
 
 
 def load_initial_coordinates(image, top_fname):
@@ -198,6 +199,8 @@ if __name__ == '__main__':
                            help='(out) file name to which the restart coordinates are extracted')
     extractor.add_argument('--box', metavar='path', default='in.xsc',
                            help='(out) file name to which the restart box information is extracted')
+    extractor.add_argument('--nobox', action='store_true',
+                           help='Explicitly state that there are no box parameters.')
     extractor.add_argument('--top', metavar='path', default='$STRING_SIM_ROOT/setup/system.pdb',
                            help='(in) file name of topology')
     extractor.add_argument('--image', metavar='path',
@@ -231,10 +234,11 @@ if __name__ == '__main__':
         top = os.path.expandvars(args.top)
         string = sarangi.String.load_form_fname(fname=os.path.expandvars(args.plan))
         image = string[sim_id]
-        extract(image=image, fname_dest_coor=args.coordinates, fname_dest_box=args.box, top=top, number=int(args.frame))
+        extract(image=image, fname_dest_coor=args.coordinates, fname_dest_box=args.box, nobox=args.nobox, top=top, number=int(args.frame))
 
         write_colvar(image=image, string=string, colvars_file=args.colvars)
 
+        # TODO: do not attempt to write labeled PDB file ("image file") by default
         write_image_coordinates(image=image, fname_dest_pdb=args.image, top_fname=top)
 
     elif args.command == 'replica_extract':
