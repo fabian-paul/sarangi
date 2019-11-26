@@ -1,0 +1,92 @@
+global env
+set base $env(STRING_SIM_ROOT)
+
+structure          $base/setup/da.psf
+coordinates        $base/setup/da.pdb
+
+set temperature    298.15
+
+#############################################################
+## SIMULATION PARAMETERS                                   ##
+#############################################################
+
+# Input
+paraTypeCharmm	    on
+parameters          $base/setup/par_all27_prot_lipid_cmap.prm
+ 
+# Force-Field Parameters
+exclude             scaled1-4
+1-4scaling          1.0
+cutoff              12.0
+switchdist          10.0
+pairlistdist        13.5
+#pairlistsPerCycle   2;                 # 2 is the default
+
+dielectric          2.5;
+
+
+# Integrator Parameters
+timestep            2.0  ;# 2fs/step
+rigidBonds          all  ;# needed for 2fs steps
+nonbondedFreq	    1
+fullElectFrequency  2
+stepspercycle       10
+
+# Constant Temperature Control
+langevin            on    ;# do langevin dynamics
+langevinDamping     1     ;# damping coefficient (gamma) of 1/ps
+langevinTemp        $temperature
+langevinHydrogen    no    ;# don't couple langevin bath to hydrogens
+
+# Output
+binaryoutput        no
+outputEnergies      100
+
+
+#############################################################
+## STRING METHOD CONFIGUATION                              ##
+#############################################################
+
+colvars             on;
+colvarsConfig       colvars.in;
+
+numsteps            50000 ;# run stops when this step is reached
+set duration        500   ;# 1 ps
+set nloops          100
+
+if [string equal $env(STAGE) "equilibration"] {
+  print "######################## equilibration #########################################"
+  set inputname      in
+  binCoordinates     $inputname.coor
+  ## extendedSystem  $inputname.xsc
+  dcdfreq $duration
+  # veldcdfreq $duration
+  restartfreq $duration
+  temperature $temperature
+  restartsave on
+  outputName init
+  cv config "colvarsTrajFrequency $duration"
+  for {set i 0} {$i < $nloops} {incr i} {
+    # firsttimestep $i
+    run $duration
+  }
+} else {
+  print "######################## propagation ###########################################"
+  set index [expr $env(i) * $duration]
+  set inputname      init.$index
+  binCoordinates     $inputname.coor
+  ## extendedSystem  $inputname.xsc
+  binVelocities      $inputname.vel
+  dcdfreq $duration
+  veldcdfreq $duration
+  outputName out_$env(i)
+  velDCDfile velout_$env(i).dcd
+  cv config "colvarsTrajFrequency $duration"
+  # delete all biases
+  foreach bias_name [cv list biases] {
+      cv bias $bias_name delete
+  }
+  # run the swarm
+  run $duration
+}
+

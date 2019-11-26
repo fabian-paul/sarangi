@@ -1,0 +1,295 @@
+colvarsTrajFrequency      500
+
+colvar {
+  name endtoend
+  distance {
+    group2 { atomnumbers { 1 } }
+    group1 { atomnumbers { 94 } }
+  }
+}
+
+colvar {
+  name cossin_psi1
+
+  customFunction cos(psi1*0.01745329)
+  customFunction sin(psi1*0.01745329)
+
+  dihedral {
+    name psi1
+    group1 { atomNumbers 1 }
+    group2 { atomNumbers 4 }
+    group3 { atomNumbers 10 }
+    group4 { atomNumbers 12 }
+  }
+}
+
+colvar {
+  name cossin_psi2
+
+  customFunction cos(psi2*0.01745329)
+  customFunction sin(psi2*0.01745329)
+
+  dihedral {
+    name psi2
+    group1 {atomNumbers 12}
+    group2 {atomNumbers 14}
+    group3 {atomNumbers 20}
+    group4 {atomNumbers 22}
+  }
+}
+
+colvar {
+  name cossin_psi3
+
+  customFunction cos(psi3*0.01745329)
+  customFunction sin(psi3*0.01745329)
+
+  dihedral {
+    name psi3
+    group1 {atomNumbers 22}
+    group2 {atomNumbers 24}
+    group3 {atomNumbers 30}
+    group4 {atomNumbers 32}
+  }
+}
+
+colvar {
+  name cossin_psi4
+
+  customFunction cos(psi4*0.01745329)
+  customFunction sin(psi4*0.01745329)
+
+  dihedral {
+    name psi4
+    group1 {atomNumbers 32}
+    group2 {atomNumbers 34}
+    group3 {atomNumbers 40}
+    group4 {atomNumbers 42}
+  }
+}
+
+colvar {
+  name cossin_psi5
+
+  customFunction cos(psi5*0.01745329)
+  customFunction sin(psi5*0.01745329)
+
+  dihedral {
+    name psi5
+    group1 {atomNumbers 42}
+    group2 {atomNumbers 44}
+    group3 {atomNumbers 50}
+    group4 {atomNumbers 52}
+  }
+}
+
+colvar {
+  name cossin_psi6
+
+  customFunction cos(psi6*0.01745329)
+  customFunction sin(psi6*0.01745329)
+
+  dihedral {
+    name psi6
+    group1 {atomNumbers 52}
+    group2 {atomNumbers 54}
+    group3 {atomNumbers 60}
+    group4 {atomNumbers 62}
+  }
+}
+
+colvar {
+  name cossin_psi7
+
+  customFunction cos(psi7*0.01745329)
+  customFunction sin(psi7*0.01745329)
+
+  dihedral {
+    name psi7
+    group1 {atomNumbers 62}
+    group2 {atomNumbers 64}
+    group3 {atomNumbers 70}
+    group4 {atomNumbers 72}
+  }
+}
+
+colvar {
+  name cossin_psi8
+
+  customFunction cos(psi8*0.01745329)
+  customFunction sin(psi8*0.01745329)
+
+  dihedral {
+    name psi8
+    group1 {atomNumbers 72}
+    group2 {atomNumbers 74}
+    group3 {atomNumbers 80}
+    group4 {atomNumbers 82}
+  }
+}
+
+colvar {
+  name cossin_psi9
+
+  customFunction cos(psi9*0.01745329)
+  customFunction sin(psi9*0.01745329)
+
+  dihedral {
+    name psi9
+    group1 {atomNumbers 82}
+    group2 {atomNumbers 84}
+    group3 {atomNumbers 90}
+    group4 {atomNumbers 97}
+  }
+}
+
+colvar {
+  name cossin_psi10
+
+  customFunction cos(psi10*0.01745329)
+  customFunction sin(psi10*0.01745329)
+  
+  dihedral {
+    name psi10
+    group1 {atomNumbers 97}
+    group2 {atomNumbers 99}
+    group3 {atomNumbers 92}
+    group4 {atomNumbers 94}
+  }
+}
+
+colvar {
+  name cossin_phi2
+
+  customFunction cos(phi2*0.01745329)
+  customFunction sin(phi2*0.01745329)
+
+  dihedral {
+    name phi2
+    group1 {atomNumbers 10}
+    group2 {atomNumbers 12}
+    group3 {atomNumbers 14}
+    group4 {atomNumbers 20}
+  }
+}
+
+colvar {
+  name cossin_phi3
+
+  customFunction cos(phi3*0.01745329)
+  customFunction sin(phi3*0.01745329)
+
+  dihedral {
+    name phi3
+    group1 {atomNumbers 20}
+    group2 {atomNumbers 22}
+    group3 {atomNumbers 24}
+    group4 {atomNumbers 30}
+  }
+}
+
+colvar {
+  name cossin_phi4
+
+  customFunction cos(phi4*0.01745329)
+  customFunction sin(phi4*0.01745329)
+
+  dihedral {
+    name phi4
+    group1 {atomNumbers 30}
+    group2 {atomNumbers 32}
+    group3 {atomNumbers 34}
+    group4 {atomNumbers 40}
+  }
+}
+
+colvar {
+  name cossin_phi5
+
+  customFunction cos(phi5*0.01745329)
+  customFunction sin(phi5*0.01745329)
+
+  dihedral {
+    name phi5
+    group1 {atomNumbers 40}
+    group2 {atomNumbers 42}
+    group3 {atomNumbers 44}
+    group4 {atomNumbers 50}
+  }
+}
+
+colvar {
+  name cossin_phi6
+
+  customFunction cos(phi6*0.01745329)
+  customFunction sin(phi6*0.01745329)
+
+  dihedral {
+    name phi6
+    group1 {atomNumbers 50}
+    group2 {atomNumbers 52}
+    group3 {atomNumbers 54}
+    group4 {atomNumbers 60}
+  }
+}
+
+colvar {
+  name cossin_phi7
+
+  customFunction cos(phi7*0.01745329)
+  customFunction sin(phi7*0.01745329)
+
+  dihedral {
+    name phi7
+    group1 {atomNumbers 60}
+    group2 {atomNumbers 62}
+    group3 {atomNumbers 64}
+    group4 {atomNumbers 70}
+  }
+}
+
+colvar {
+  name cossin_phi8
+
+  customFunction cos(phi8*0.01745329)
+  customFunction sin(phi8*0.01745329)
+  
+  dihedral {
+    name phi8
+    group1 {atomNumbers 70}
+    group2 {atomNumbers 72}
+    group3 {atomNumbers 74}
+    group4 {atomNumbers 80}
+  }
+}
+
+
+colvar {
+  name cossin_phi9
+
+  customFunction cos(phi9*0.01745329)
+  customFunction sin(phi9*0.01745329)
+  
+  dihedral {
+    name phi9
+    group1 {atomNumbers 80}
+    group2 {atomNumbers 82}
+    group3 {atomNumbers 84}
+    group4 {atomNumbers 90}
+  }
+}
+
+colvar {
+  name cossin_phi10
+
+  customFunction cos(phi10*0.01745329)
+  customFunction sin(phi10*0.01745329)
+  
+  dihedral {
+    name phi10
+    group1 {atomNumbers 90}
+    group2 {atomNumbers 97}
+    group3 {atomNumbers 99}
+    group4 {atomNumbers 92}
+  }
+}

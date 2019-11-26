@@ -1,0 +1,51 @@
+global env
+set base $env(STRING_SIM_ROOT)
+
+structure          $base/setup/da.psf
+coordinates        $base/setup/da.pdb
+outputName         out
+
+set temperature    298.15
+
+#############################################################
+## SIMULATION PARAMETERS                                   ##
+#############################################################
+
+# Input
+paraTypeCharmm	    on
+parameters          $base/setup/par_all27_prot_lipid_cmap.prm
+temperature         $temperature
+ 
+# Force-Field Parameters
+exclude             scaled1-4
+1-4scaling          1.0
+cutoff              12.0
+switchdist          10.0
+pairlistdist        13.5
+#pairlistsPerCycle   2;                 # 2 is the default
+
+dielectric          2.5;
+
+
+# Integrator Parameters
+timestep            2.0  ;# 2fs/step
+rigidBonds          all  ;# needed for 2fs steps
+nonbondedFreq	    1
+fullElectFrequency  2
+stepspercycle       10
+
+# Constant Temperature Control
+langevin            on    ;# do langevin dynamics
+langevinDamping     1     ;# damping coefficient (gamma) of 1/ps
+langevinTemp        $temperature
+langevinHydrogen    no    ;# don't couple langevin bath to hydrogens
+
+# Output
+binaryoutput        no
+dcdfreq             500     ;# 500steps = every 1ps
+outputEnergies      100
+
+colvars             on;
+colvarsConfig       $base/setup/pulling.conf;
+
+run 20000

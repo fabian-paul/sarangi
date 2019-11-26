@@ -1,0 +1,37 @@
+#!/bin/bash
+set -e
+
+{environment}
+
+# make temporary working directory
+pushd .
+WORKDIR=$STRING_SIM_ROOT/work/$STRING_IMAGE_ID
+mkdir -p $WORKDIR
+cd $WORKDIR
+
+echo "WORKDIR is $WORKDIR"
+
+python $STRING_ARCHIVIST extract --coordinates in.coor --nobox --colvars colvars.in
+# --image image.pdb
+
+if [ "$STRING_SWARM" == "1" ]
+then
+  cp $STRING_SIM_ROOT/setup/production_swarm.inp .
+  cp $STRING_SIM_ROOT/setup/propagate_swarm.sh .
+  source propagate_swarm.sh
+else
+  exit 25
+fi
+
+# TODO: replace by simple copy operation?
+python $STRING_ARCHIVIST store --trajectory out.dcd --colvarstraj out.colvars.traj
+# special handling of intial state
+cp init.dcd $STRING_BASE/${{STRING_IMAGE_ID}}_init.dcd
+mkdir -p $STRING_OBSERVABLES_BASE/colvars_init
+cp init.colvars.traj $STRING_OBSERVABLES_BASE/colvars_init/${{STRING_IMAGE_ID}}.colvars.traj
+
+# compute order parameters as defined in the plan file (generic command)
+python $STRING_SARANGI_SCRIPTS/bow obs --ignore_colvars_traj --image $STRING_IMAGE_ID
+
+# compute overlap extimates
+python $STRING_SARANGI_SCRIPTS/bow overlap --subdir colvars --image $STRING_IMAGE_ID
