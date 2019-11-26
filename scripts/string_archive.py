@@ -5,7 +5,7 @@ import os
 import shutil
 import warnings
 import sarangi
-from sarangi.util import root
+from sarangi.util import root, mkdir
 
 
 __all__ = ['save_coor', 'save_xsc', 'store', 'extract', 'write_image_coordinates', 'write_colvar',
@@ -62,9 +62,12 @@ def store(fname_trajectory, fname_colvars_traj, sim_id):
         root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
     shutil.copy(fname_trajectory, fname_archived+'.dcd')
-    fname_archived = '{root}/observables/{branch}_{iteration:03d}/colvars/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(
-        root=root(), branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
+    colvar_folder = '{root}/observables/{branch}_{iteration:03d}/colvars/'.format(root=root(), branch=branch, iteration=int(iteration))
+
+    fname_archived = '{folder}/{branch}_{iteration:03d}_{image_major:03d}_{image_minor:03d}'.format(
+        folder=colvar_folder, branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
+    mkdir(colvar_folder)
     shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
 
 
