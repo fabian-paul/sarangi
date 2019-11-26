@@ -11,7 +11,7 @@ from . import sarangi
 try:
     from .short_path import path as shortest_path
 except ImportError:
-    def shortest_path(cv, start, stop, lambada):  # fig leaf fall-back implemenation
+    def shortest_path(cv, start, stop, lambada, logspace=False):  # fig leaf fall-back implementation
         # TODO: debug me!
         import scipy.spatial
         import scipy.sparse.csgraph
@@ -112,10 +112,10 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     Parameters
     ----------
     traj_fnames : str or list of str
-        File name of the input trajectory. Can also be a list of file names, in which case the contents
-        of the files is concatenated (in the exact order given by the list).
+        File name of the input trajectory. Can also be a list of file names, in which case the
+        files are treated as parts of the same trajectory (in the exact order given by the list).
     branch : str
-        Short label for the new string, e.g. 'AZ'
+        Short label for the new string, e.g. 'AZ'. Can be any number of letters long.
     fields : list or `sarangi.All`
         Selection of collective variable names. If `All` is given, use all colvars that the `command` outputs.
     swarm : bool
@@ -127,8 +127,8 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     max_images : int
         New string will not contain more that this number of images.
     min_rmsd : float
-        Stop adding images to the initial string, once the RMSD bottleneck reaches this value (in Angstrom).
-    mother_string : sarangi.String
+        Stop adding images to the initial string, once the RMSD bottleneck reaches or drops below this value (in Angstrom).
+    mother_string : sarangi.String (optional)
         String object, will copy basic configuration information from that string.
     command : str
         Executable that computes collective variables. Program must accept --id --cvname options.
@@ -137,7 +137,8 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
     compress: bool
         If true, only import into the project the MD frames (full coordinares) that will actually be used as
         starting points for MD integration.
-        If false, copy the whole input trajectories into the project (sub-)folder.
+        If false, copy the whole input trajectories into the project (sub-)folder even if most frames are
+        nerver used.
         # TODO: allow to input collective variable file directly
     stride : int
         Only use every n'th frame from the input trajectories.
@@ -193,15 +194,18 @@ def import_trajectory(traj_fnames, branch, fields=util.All, swarm=True, end=-1, 
         traj_indices = traj_indices[center_indices]
         cvs_linear = kmeans.cluster_centers_
 
-    # select images using subtropical shortest path algorithm
-    if lambada is None:
-        print('finding connected path...')
-        image_indices_linear = denoise(cvs_linear, max_images=max_images, min_rmsd=min_rmsd)
+    # select images using soft-max capacity path algorithm
+    if np.isinf(float(max_images)):
+        image_indices_linear = np.arange(cvs_linear.shape[0])
     else:
-        print('finding connected path (in expert mode) ...')
-        image_indices_linear, _ = denoise_once(cv=cvs_linear, lambada=lambada)
-    #centers = cvs_linear[image_indices_linear, :]
-    print('Length of path is %d. [%d, ..., %d]' % (len(image_indices_linear), image_indices_linear[0], image_indices_linear[-1]))
+        if lambada is None:
+            print('finding connected path...')
+            image_indices_linear = denoise(cvs_linear, max_images=max_images, min_rmsd=min_rmsd)
+        else:
+            print('finding connected path (in expert mode) ...')
+            image_indices_linear, _ = denoise_once(cv=cvs_linear, lambada=lambada)
+        #centers = cvs_linear[image_indices_linear, :]
+        print('Length of path is %d. [%d, ..., %d]' % (len(image_indices_linear), image_indices_linear[0], image_indices_linear[-1]))
 
     # import frames into the project ...
     util.mkdir('{root}/strings/{branch}_000/'.format(root=util.root(), branch=branch))
@@ -301,7 +305,7 @@ def denoise_once(cv, lambada, geomf=None):
 
 
 def gss(f, a, b, tol=1e-3, goal=float('-inf'), max_iter=float('inf'), verbose=False):
-    'Minimize the function given by f(x)[0] under the condition f(x)[1].'
+    'Minimize the function given by f(x)[0] under the condition f(x)[1] (Golden section search).'
     import math
     hist_x = []
     hist_f = []
@@ -328,7 +332,7 @@ def gss(f, a, b, tol=1e-3, goal=float('-inf'), max_iter=float('inf'), verbose=Fa
         # the left interval, if the point in the middle of the right interval
         # is infeasible. That's all. No such reasoning is needed for violations
         # in the left interval, since we can always go further left.
-        if fc < fd or not cond_d:  # the "or not cond_d" expression is the modification
+        if fc < fd or not cond_d:  # the "or not cond_d" expression is the modification to the original GSS algorithm
             b = d
             hist_x.append(d)
             hist_f.append(fd)
@@ -384,72 +388,16 @@ def denoise(cv, max_images=200, min_rmsd=0.1, max_iter=float('inf'), verbose=Tru
     return result
 
 
-def denoise2(cv, max_images, min_rmsd, max_iter=8, verbose=True):
-    # TODO: rewrite this function: path length does not seem to depend monotonically on the scaling parameter
-    # this means that we cant 
-    lambada = 1.0  # starting value
-    lowest_infeasible_top_bound = 200.  # smallest upper bound on the parameter, such that the constraints are fulfilled
-    highest_feasible_bottom_bound = 0.  # highest lower bound on the parameter in the infeasible region
-    path = [0, len(cv)]
-
-    for _ in range(max_iter):
-        try:
-            path, jumps = denoise_once(cv=cv, lambada=lambada)
-        except OverflowError:
-            if verbose:
-                print('Network was disconnected by the wrong choice of a too large exponential scaling parameter.')
-            error = np.inf
-            n_images = 0
-            feasible = False
-        else:
-            error = np.median(jumps)
-            n_images = len(path)
-            if verbose:
-                print('^=', highest_feasible_bottom_bound, '_=', lowest_infeasible_top_bound)
-                print('Denoising attempt with parameter {lambada} yielded {n_images} images and median jump {median}.'.format(
-                lambada=lambada, n_images=n_images, median=error))
-            feasible = error >= min_rmsd and n_images <= max_images and not np.any(np.isnan(jumps))
-
-        if verbose:
-            if feasible:
-                print('This is feasible.')
-            else:
-                print('This is infeasible.')
-
-        if feasible:
-            if lambada > highest_feasible_bottom_bound:  # if we found a new upper boundary, adjust it
-                if verbose:
-                    print('increased bottom bound', highest_feasible_bottom_bound, '->', lambada)
-                highest_feasible_bottom_bound = lambada
-        else:  # infeasible
-            if lambada < lowest_infeasible_top_bound:  # if we found a new lower boundary, adjust it
-                if verbose:
-                    print('decreased top bound', lowest_infeasible_top_bound, '->', lambada)
-                lowest_infeasible_top_bound = lambada
-
-        if feasible and abs(n_images - max_images) < max_images/10. and abs(error - min_rmsd) < min_rmsd/10.:
-            # feasible and good enough -> done
-            return path
-
-        if feasible:  # feasible but not good
-            # increase lambada
-            lambada = 0.5*(lowest_infeasible_top_bound + lambada)
-        else:  # neither good nor feasible
-            # decrease params
-            lambada = 0.5*(highest_feasible_bottom_bound + lambada)
-
-    return path
-
-
 def self_consistency_compressed(traj_fname, branch, command, fields, cvname, cv_centers_linear, frame_indices, traj_indices):
     # this type of check is only run, if we are "compressing" i.e. importing individual frames, so we can rewrite the cv file
     cv = get_colvars([traj_fname], branch=branch, command=command, fields=fields, cvname=cvname, write_to_disk=True, use_existing_file=False)[0]
     #print('shape of the read-back colvars is:', cv.as2D(fields=fields).shape)
     #print('expected shape is:', cv_centers_linear.shape)
-    recomputed = cv.as2D(fields=fields)
-    is_ok = np.allclose(cv.as2D(fields=fields), cv_centers_linear)
-    #for i, (i_frame, i_traj) in enumerate(zip(frame_indices, traj_indices)):
-    #    print(i_traj, i_frame, 'error:', np.max(np.abs(recomputed[i, :] - cv_centers_linear[i, :])))
+    is_ok = np.allclose(cv.as2D(fields=fields), cv_centers_linear, atol=1E-6)
+    if not is_ok:
+        recomputed = cv.as2D(fields=fields)
+        for i, (i_frame, i_traj) in enumerate(zip(frame_indices, traj_indices)):
+            print(i_traj, i_frame, 'error:', np.max(np.abs(recomputed[i, :] - cv_centers_linear[i, :])))
     return is_ok
 
 
@@ -466,8 +414,8 @@ def parse_args_import_trajectory(argv=None):
                         help='By default, propagate using the swarm of trajectories method. If set, use permanent biases (umbrella sampling).')
     parser.add_argument('--end', default=-1, type=int,
                         help='stop looking at the data past this frame (default=-1, use all frame)')
-    parser.add_argument('--max_images', default=300, type=int,
-                        help='New string will not contain more that this number of images.')
+    parser.add_argument('--max_images', default=300,
+                        help='New string will not contain more that this number of images. Set to inf to use all frames in the input data.')
     parser.add_argument('--min_rmsd', default=0.3, type=float,
                         help='Stop adding images to the intial string, once the RMSD bottleneck reaches this value (in Angstrom).')
     parser.add_argument('--command', type=str,
