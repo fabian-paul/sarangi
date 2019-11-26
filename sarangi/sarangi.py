@@ -8,7 +8,6 @@ import yaml
 import tempfile
 from tqdm import tqdm
 from .util import *
-from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
 from .colvars import Colvars
 from .image import Image, load_image, interpolate_id
 from .queuing import *
@@ -717,6 +716,7 @@ class String(object):
 
         # do the string reparametrization
         if reparametrize:
+            from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
             ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
             if n_nodes is not None:
                 print('running bisecion to find the correct parameter for reparametrization ')
@@ -726,7 +726,7 @@ class String(object):
                 self.image_distance = i_d / n_atoms**0.5
             nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
                                                 d_skip=self.image_distance * n_atoms**0.5 / 2)
-            # do some self-consistency tests of the reparamtrization step
+            # do some self-consistency tests of the reparametrization step
             eps = 1E-6
             # check distances
             for i, (a, b) in enumerate(zip(nodes[0:-1], nodes[1:])):
@@ -747,8 +747,10 @@ class String(object):
         T = 303.15
         RT = IDEAL_GAS_CONSTANT * T
         for i, (x, y) in enumerate(zip(nodes[0:-1], nodes[1:])):
+            a = flat_to_structured(x[np.newaxis, :], fields=real_fields, dims=dims)
+            b = flat_to_structured(y[np.newaxis, :], fields=real_fields, dims=dims)
             for f in real_fields:
-                k = RT / np.linalg.norm(x[f] - y[f])**2
+                k = RT / np.linalg.norm(a[f] - b[f])**2
                 #current_spring = springs[i][f] if f in springs[i] else 0.
                 springs[i][f] = min(k, max_spring_constant)
                 #current_spring = springs[i + 1][f] if f in springs[i + 1] else 0.
@@ -1023,7 +1025,7 @@ class String(object):
         ignore_missing: bool
             Ignore missing observable files; simply skip pairs that have missing files.
         alpha: float
-            Parameter for definition of image distance for the computation of the optimal
+            CURRENTLY NOT SUPPORTED, Parameter for definition of image distance for the computation of the optimal
             image pair for interpolation.
 
         Returns
