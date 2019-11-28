@@ -38,7 +38,7 @@ def read_coor(fname='out.coor'):
     for i in range(n_atoms):
         i0 = 4 + i*3*8
         xyz[i, :] = unpack('<ddd', data[i0:i0 + 8*3])
-    return xyz*0.1  # convert Angstroms to nanometers
+    return xyz*0.1  # convert Angstroms to nanometers for compatibility with MDTraj
 
 
 def save_xsc(traj, fname, frame=0):
@@ -68,7 +68,10 @@ def store(fname_trajectory, fname_colvars_traj, sim_id):
         folder=colvar_folder, branch=branch, iteration=int(iteration), image_major=int(image_major), image_minor=int(image_minor)
     )
     mkdir(colvar_folder)
-    shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
+    if os.path.exists(fname_colvars_traj):
+        shutil.copy(fname_colvars_traj, fname_archived+'.colvars.traj')
+    else:
+        warnings.warn('File %s not found. Skipping store operation.' % fname_colvars_traj)
 
 
 def extract(image, fname_dest_coor, fname_dest_box, nobox, top, number=-1):
@@ -226,6 +229,16 @@ if __name__ == '__main__':
     re_storer.add_argument('--plan', metavar='path', default='$STRING_PLAN',
                            help='(in) path to plan file')
 
+    nosimulation = subparser.add_parser('fake_simulation', formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    nosimulation.add_argument('--coordinates', metavar='path', default='in.coor',
+                              help='(in) file name from which the restart coordinates are extracted')
+    nosimulation.add_argument('--box', metavar='path', default='in.xsc',
+                              help='(in) file name from which the restart box information is extracted')
+    nosimulation.add_argument('--nobox', action='store_true',
+                              help='Explicitly state that there are no box parameters.')
+    nosimulation.add_argument('--trajectory', metavar='path', default='out.dcd',
+                              help='(out) file name of the trajectory file to be generated')
+
     args = parser.parse_args()
 
     if args.command == 'store':
@@ -265,5 +278,11 @@ if __name__ == '__main__':
             store(fname_trajectory='out.%d.sort.dcd' % i, fname_colvars_traj='out.%d.sort.colvars.traj' % i, sim_id=image.image_id)
             # TODO: reorder by Hamiltonian (dcd and colvars.traj) ?
             # TODO: store more data, like the history of biases? ?
+
+    if args.command == 'fake_simulation':
+        xyz = read_coor(args.coordinates)
+        # TODO: load box information
+        with mdtraj.formats.DCDTrajectoryFile(args.trajectory, 'w') as f:
+            f.write(xyz)
 
     print('end archivist')

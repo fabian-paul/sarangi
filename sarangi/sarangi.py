@@ -555,10 +555,10 @@ class String(object):
             TODO: Future generation of this software should not only find the single widest path
             to propagate but some collection of dominant paths.
         '''
-        from .util import widest_path, structured_to_dict, dict_to_structured, IDEAL_GAS_CONSTANT, DEFAULT_TEMPERATURE
+        from .util import widest_path, structured_to_dict, dict_to_structured, IDEAL_GAS_CONSTANT_KCAL_MOL_K, DEFAULT_TEMPERATURE
         from collections import defaultdict
 
-        max_spring_constant = 1000.
+        max_spring_constant = 200.
 
         if not swarm:
             raise NotImplementedError('evolve_kinetically can be only used with swarm=True')
@@ -597,7 +597,7 @@ class String(object):
         # Compute the distance between neighbors and set spring constant accordingly, sigma=delta.
         # If adjust springs is False, only fill in missing spring constants.
         new_springs = [structured_to_dict(im.spring) for im in images_to_evolve]
-        RT = IDEAL_GAS_CONSTANT * DEFAULT_TEMPERATURE  # kcal/mol
+        RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * DEFAULT_TEMPERATURE  # kcal/mol
         for i, (a, b) in enumerate(zip(new_nodes[0:-1], new_nodes[1:])):
             for f in set(a.dtype.names) & set(b.dtype.names):  # only adjust springs for which we can compute the distance between (augmented) nodes
                 dist = np.linalg.norm(a[f] - b[f])  # not sure if this is a good idea; node distances are too random
@@ -615,7 +615,25 @@ class String(object):
         new_string = self.empty_copy(iteration=iteration, previous=self)
         image_class = images_to_evolve[0].__class__
 
-        for i_running, (node, spring) in enumerate(zip(new_nodes, new_springs)):
+        # handling of fixed nodes at the very beginning and end of the string
+        if self.images_ordered[0].fixed:
+            new_image = self.images_ordered[0].copy()  # just make an exact copy, will copy the "fixed" property
+            new_image.image_id = '%s_%03d_%03d_%03d' % (self.branch, iteration, 0, 0)  # but assign new id
+            new_string.images[new_image.seq] = new_image
+            first_non_fixed_node = 1
+        else:
+            first_non_fixed_node = 0
+        if self.images_ordered[-1].fixed:
+            new_image = self.images_ordered[-1].copy()  # just make an exact copy
+            new_image.image_id = '%s_%03d_%03d_%03d' % (self.branch, iteration, len(new_nodes)-1, 0)  # but assign new id
+            new_string.images[new_image.seq] = new_image
+            last_non_fixed_node = len(new_nodes) - 1
+        else:
+            last_non_fixed_node = len(new_nodes)
+        s, e = first_non_fixed_node, last_non_fixed_node
+
+        # conventional (non fixed) nodes
+        for i_running, node, spring in zip(range(len(new_nodes))[s:e], new_nodes[s:e], new_springs[s:e]):
             best_image, best_step, best_dist = find_realization_in_string([self], node=node, subdir=subdir)
 
             new_image = image_class(image_id='%s_%03d_%03d_%03d' % (self.branch, iteration, i_running, 0),
@@ -675,7 +693,7 @@ class String(object):
 
         # collect all means, in the same time check that all the coordinate dimensions and
         # coordinate names are the same across the string
-        from .util import bisect_decreasing, dict_to_structured, structured_to_dict, IDEAL_GAS_CONSTANT
+        from .util import bisect_decreasing, dict_to_structured, structured_to_dict, IDEAL_GAS_CONSTANT_KCAL_MOL_K
         from collections import defaultdict
         if not self.is_homogeneous and reparametrize:
             raise RuntimeError('Not all nodes live in exactly the same colvars space. This is not supported by this function.')
@@ -720,9 +738,10 @@ class String(object):
             ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
             if n_nodes is not None:
                 print('running bisecion to find the correct parameter for reparametrization ')
-                i_d = bisect_decreasing(lambda x: len(compute_equidistant_nodes_2(old_nodes=ordered_means, d=x)),
-                            a=self.image_distance*n_atoms**0.5, b=self.image_distance*n_atoms**0.5, level=n_nodes)
-                print('result is', i_d)
+                i_d, n_solution = bisect_decreasing(lambda x: len(compute_equidistant_nodes_2(old_nodes=ordered_means, d=x)),
+                            a=self.image_distance*n_atoms**0.5, b=self.image_distance*n_atoms**0.5, level=n_nodes+1, return_y=True)
+                print('result is', i_d, n_solution)
+                del n_solution
                 self.image_distance = i_d / n_atoms**0.5
             nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
                                                 d_skip=self.image_distance * n_atoms**0.5 / 2)
@@ -742,10 +761,10 @@ class String(object):
         else:
             nodes = current_means
 
-        # compute new spring constants
+        # compute new spring constants TODO: adjust spring according to displacement!
         springs = defaultdict(dict)
         T = 303.15
-        RT = IDEAL_GAS_CONSTANT * T
+        RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * T
         for i, (x, y) in enumerate(zip(nodes[0:-1], nodes[1:])):
             a = flat_to_structured(x[np.newaxis, :], fields=real_fields, dims=dims)
             b = flat_to_structured(y[np.newaxis, :], fields=real_fields, dims=dims)
@@ -760,8 +779,25 @@ class String(object):
         new_string = self.empty_copy(iteration=iteration, previous=self)
         image_class = self.images_ordered[0].__class__
 
-        for i_node, x in enumerate(nodes):
-            # we have to convert the unrealized nodes (predicted point of conformational space) to realized frames
+        # handling of fixed nodes at the very beginning and end of the string
+        if self.images_ordered[0].fixed:
+            new_image = self.images_ordered[0].copy()  # just make an exact copy, will copy the "fixed" property
+            new_image.image_id = '%s_%03d_%03d_%03d' % (self.branch, iteration, 0, 0)  # but assign new id
+            new_string.images[new_image.seq] = new_image
+            first_non_fixed_node = 1
+        else:
+            first_non_fixed_node = 0
+        if self.images_ordered[-1].fixed:
+            new_image = self.images_ordered[-1].copy()  # just make an exact copy
+            new_image.image_id = '%s_%03d_%03d_%03d' % (self.branch, iteration, len(nodes)-1, 0)  # but assign new id
+            new_string.images[new_image.seq] = new_image
+            last_non_fixed_node = len(nodes) - 1
+        else:
+            last_non_fixed_node = len(nodes)
+        s, e = first_non_fixed_node, last_non_fixed_node
+
+        for i_node, x in zip(range(len(nodes))[s:e], nodes[s:e]):
+            # we have to convert the unrealized nodes (predicted point in conformational space) to realized frames
             node = flat_to_structured(x[np.newaxis, :], fields=real_fields, dims=dims)
             best_image, best_step, best_dist = find_realization_in_string([self], node=node, subdir=subdir)
 
@@ -941,8 +977,8 @@ class String(object):
         A newly generated (unpropagated) image
         '''
         from .colvars import overlap_svm
-        from .util import recarray_dims, IDEAL_GAS_CONSTANT
-        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
+        from .util import recarray_dims, IDEAL_GAS_CONSTANT_KCAL_MOL_K
+        RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * T  # kcal/mol
 
         x = a.colvars(subdir=subdir)  #  This is not necessarily the colvars subdir!
         y = b.colvars(subdir=subdir)
@@ -1276,9 +1312,9 @@ class String(object):
         'Estimate all free energies using MBAR (when running with conventional order parameters, not RMSD)'
         import pyemma
         import pyemma.thermo
-        from .util import IDEAL_GAS_CONSTANT
+        from .util import IDEAL_GAS_CONSTANT_KCAL_MOL_K
 
-        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
+        RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * T  # kcal/mol
 
         fields = self.images_ordered[0].fields
         for image in self.images.values():
@@ -1328,9 +1364,9 @@ class String(object):
     def mbar_RMSD(self, T=303.15, subdir='rmsd'):  # TODO: move some of this into the Image classes
         'For RMSD-type bias: Estimate all free energies using MBAR'
         import pyemma.thermo
-        from .util import IDEAL_GAS_CONSTANT
+        from .util import IDEAL_GAS_CONSTANT_KCAL_MOL_K
 
-        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
+        RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * T  # kcal/mol
 
         # collect unique RMSDs and biases
         bias_def_to_simid = collections.defaultdict(list)
@@ -1637,8 +1673,8 @@ class String(object):
 
         '''
         import msmtools
-        from .util import IDEAL_GAS_CONSTANT
-        RT = IDEAL_GAS_CONSTANT * T  # kcal/mol
+        from .util import IDEAL_GAS_CONSTANT_KCAL_MOL_K
+        RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * T  # kcal/mol
         c = self.count_matrix(subdir=subdir, subdir_init=subdir_init, fields=fields, centers=centers)
         cset = msmtools.estimation.largest_connected_set(c, directed=True)
         t_cset = msmtools.estimation.tmatrix(c[cset, :][:, cset])

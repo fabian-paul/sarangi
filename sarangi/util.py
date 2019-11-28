@@ -5,11 +5,12 @@ import os
 
 
 __all__ =['find', 'mkdir', 'dict_to_structured', 'structured_to_dict', 'structured_to_flat', 'flat_to_structured',
-          'recarray_average', 'recarray_difference', 'recarray_vdot', 'recarray_norm', 'recarray_allclose',
-          'AllType', 'All', 'root', 'is_sim_id', 'IDEAL_GAS_CONSTANT', 'DEFAULT_TEMPERATURE']
+          'recarray_average', 'recarray_difference', 'recarray_vdot', 'recarray_norm', 'recarray_allclose', 'argmin_dict',
+          'AllType', 'All', 'root', 'is_sim_id', 'pairing', 'bisect_decreasing', 'IDEAL_GAS_CONSTANT_KCAL_MOL_K',
+          'DEFAULT_TEMPERATURE']
 
 
-IDEAL_GAS_CONSTANT = 1.985877534E-3  # in kcal/mol/K
+IDEAL_GAS_CONSTANT_KCAL_MOL_K = 1.985877534E-3  # in kcal/mol/K
 DEFAULT_TEMPERATURE = 303.15
 
 def abspath_with_symlinks(p):
@@ -160,7 +161,7 @@ def structured_to_flat(recarray, fields=None):
 
 
 def flat_to_structured(array, fields, dims):
-    dtype = np.dtype([(name, np.float64, dim) for name, dim in zip(fields, dims)])
+    dtype = np.dtype([(name, np.float64, dim) if dim > 1 else (name, np.float32) for name, dim in zip(fields, dims)])
     indices = np.concatenate(([0], np.cumsum(dims)))
     # TODO: create simple structured array instead of recarray?
     colgroups = [array[:, start:stop] for name, start, stop in zip(fields, indices[0:-1], indices[1:])]
@@ -233,6 +234,17 @@ def recarray_allclose(a, b):
     return all([np.allclose(a[field], b[field]) for field in a.dtype.names])
 
 
+def argmin_dict(d):
+    'key with minimum value'
+    minimum = float('inf')
+    argminimum = None
+    for k, v in d.items():
+        if v < minimum:
+            minimum = v
+            argminimum = k
+    return argminimum
+
+
 class AllType(object):
     'x in All == True for any x'
     def __contains__(self, key):
@@ -246,6 +258,7 @@ All = AllType()
 
 
 def pairing(i, j, ordered=True):
+    'Cantor\'s pairing function.'
     return (i + j) * (i + j + 1) // 2 + i
     #if not tri:
     #    return (i + j) * (i + j + 1) // 2 + i
@@ -288,6 +301,7 @@ def nodes_to_trajs(string, fname='nodes.pdb', fields=All):
 
 
 def shortest_path(cost_matrix, start, stop):
+    'Compute the shortest path (minimum summed cost path) from start to stop.'
     import scipy.sparse.csgraph
     _, pred = scipy.sparse.csgraph.dijkstra(cost_matrix, directed=False, indices=start, return_predecessors=True)
     path = [stop]
@@ -301,6 +315,7 @@ def shortest_path(cost_matrix, start, stop):
 
 
 def widest_path(matrix, start=0, stop=-1):
+    'Compute the widest path (max-capacity path or min-bottleneck path) form start to stop.'
     import scipy.sparse.csgraph
     if matrix.shape[0] != matrix.shape[1]:
         raise ValueError('Matrix must be square.')
@@ -320,6 +335,7 @@ def widest_path(matrix, start=0, stop=-1):
 
 
 def bisect_decreasing(func, a, b, level=0., max_iter=50, tol=1.E-5, return_y=False):
+    'Find a root x* of func(x*)==level using the bisection method. Algorithm will extend [a, b] if [f(a), f(b)] does not bracket level.'
     a_, b_ = a, b
     a = min(a_, b_)
     b = max(a_, b_)
@@ -343,7 +359,7 @@ def bisect_decreasing(func, a, b, level=0., max_iter=50, tol=1.E-5, return_y=Fal
         #print('y', y)
         if y == 0 or 0.5*(b - a) <= tol:
             if return_y:
-                return c, y
+                return c, y + level
             else:
                 return c
         if np.sign(y) == np.sign(func(a) - level):

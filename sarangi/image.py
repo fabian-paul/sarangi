@@ -69,14 +69,15 @@ def between(a, e, upper, lower, excluded):
 
 
 class Image(object):
-    _known_keys = ['id', 'prev_image_id', 'prev_frame_number', 'group', 'swarm']
+    _known_keys = ['id', 'prev_image_id', 'prev_frame_number', 'group', 'swarm', 'fixed']
 
-    def __init__(self, image_id, previous_image_id, previous_frame_number, group_id, swarm, opaque):
+    def __init__(self, image_id, previous_image_id, previous_frame_number, group_id, swarm, fixed, opaque):
         self.image_id = image_id
         self.previous_image_id = previous_image_id
         self.previous_frame_number = previous_frame_number
         self.group_id = group_id
         self.swarm = swarm
+        self.fixed = fixed
         self.opaque = opaque
         self._colvars = {}
         self._x0 = {}
@@ -89,13 +90,17 @@ class Image(object):
         if 'swarm' in config:
             swarm = config['swarm']
         else:
-            swarm = False
+            swarm = False  # TODO: think better what should be the default?
         if 'group' in config:
             group_id = config['group']
         else:
             group_id = None
+        if 'fixed' in config:
+            fixed = config['fixed']
+        else:
+            fixed = False
         return {'image_id': image_id, 'previous_image_id': previous_image_id,
-                'previous_frame_number': previous_frame_number, 'group_id': group_id, 'swarm': swarm}
+                'previous_frame_number': previous_frame_number, 'group_id': group_id, 'swarm': swarm, 'fixed': fixed}
 
     def dump(self):
         'Dump state of object to dictionary. Called by String.dump'
@@ -105,6 +110,8 @@ class Image(object):
             config['group'] = self.group_id
         if self.swarm:
             config['swarm'] = True
+        if self.fixed:
+            config['fixed'] = True
         return config
 
     @property
@@ -220,6 +227,10 @@ class Image(object):
             env['STRING_SWARM'] = '1'
         else:
             env['STRING_SWARM'] = '0'
+        if self.fixed:
+            env['STRING_IMAGE_FIXED'] = '1'
+        else:
+            env['STRING_IMAGE_FIXED'] = '0'
         env['STRING_BASE'] = '{root}/strings/{branch}_{iteration:03d}'.format(root=root_,
                                                                               branch=self.branch,
                                                                               iteration=self.iteration)
@@ -437,12 +448,19 @@ class Image(object):
     @classmethod
     def get_fields_non_overlapping(cls, a, b, subdir='colvars', threshold: float=0.1):
         from .colvars import overlap_svm
-        # TODO: extend to multiple subdirs? (otherwise we could move this into the Colvars class...)
+        from .overlap import load_pair
         x = a.colvars(subdir=subdir)
         y = b.colvars(subdir=subdir)
         fields = []
+        try:
+            overlap_a_b = load_pair(a.image_id, b.image_id, subdir=subdir)
+        except FileNotFoundError:
+            overlap_a_b = {}  # If there are no precomputed values, we simply have to recompute them.
         for field in set(x.fields) | set(y.fields):
-            o = overlap_svm(x._colvars[field], y._colvars[field])
+            if field in overlap_a_b:
+                o = overlap_a_b[field]
+            else:
+                o = overlap_svm(x._colvars[field], y._colvars[field])
             if o < threshold:
                 fields.append(field)
         return fields
@@ -455,10 +473,10 @@ class CompoundImage(Image):
     # NAMD conf will expand to customfunction and multiple harmonic forces
     # spring can eb a scarlar or a vector
     def __init__(self, image_id, previous_image_id, previous_frame_number, group_id,
-                 node, spring, terminal=None, orthogonal_spring=None, colvars_def=None, swarm=None, opaque=None):
+                 node, spring, terminal=None, orthogonal_spring=None, colvars_def=None, swarm=None, fixed=False, opaque=None):
         super(CompoundImage, self).__init__(image_id=image_id, previous_image_id=previous_image_id,
                                             previous_frame_number=previous_frame_number, group_id=group_id,
-                                            swarm=swarm, opaque=opaque)
+                                            swarm=swarm, fixed=fixed, opaque=opaque)
 
         self.node = node
         self.terminal = terminal
@@ -477,11 +495,12 @@ class CompoundImage(Image):
             spring = self.spring
         else:
             spring = self.spring.copy()
-        terminal = self.terminal.copy() if self.node is not None else None
+        terminal = self.terminal.copy() if self.terminal is not None else None
         return CompoundImage(image_id=self.image_id, previous_image_id=self.previous_image_id,
                              previous_frame_number=self.previous_frame_number, group_id=self.group_id,
                              node=node, spring=spring, terminal=terminal,
-                             orthogonal_spring=self.orthogonal_spring, colvars_def=self.colvars_def, opaque=self.opaque)
+                             orthogonal_spring=self.orthogonal_spring, colvars_def=self.colvars_def, swarm=self.swarm,
+                             fixed=self.fixed, opaque=self.opaque)
 
     @classmethod
     def load(cls, config, colvars_def):
@@ -544,11 +563,14 @@ class CompoundImage(Image):
         for restraint_name in self.fields:
             spring_value = self.spring[restraint_name]
             if self.node is not None and restraint_name in self.node.dtype.names:
-                center_value = self.node[restraint_name]
-                if isinstance(center_value[0], numbers.Number):
-                    center_value_namd = '%f' % center_value[0]
+                center_value = self.node[restraint_name][0]  # the [0] is because we consistently make recarrays be arrays and canot consist of an isolated record.
+                if isinstance(center_value, numbers.Number):
+                    center_value_namd = '%f' % center_value
                 else:
-                    center_value_namd = '(' + ' , '.join([str(x) for x in center_value[0]]) + ')'
+                    # small hack to keep valid centers that encode an angle (cos and sin must lay on unit circle)
+                    if 'cossin' in restraint_name:
+                        center_value = center_value / np.linalg.norm(center_value)
+                    center_value_namd = '(' + ' , '.join([str(x) for x in center_value]) + ')'
             else:
                 warnings.warn('Spring constant was defined but no umbrella center. Using the default 0.0.')
                 center_value_namd = '0.0'
@@ -637,10 +659,10 @@ class CartesianImage(Image):
     #    return CartesianImage(colvar_def=colvar_def)
 
     def __init__(self, image_id, previous_image_id, previous_frame_number, node, spring, terminal=None,
-                 orthogonal_spring=None, group_id=None, colvars_def=None, swarm=None, opaque=None):
+                 orthogonal_spring=None, group_id=None, colvars_def=None, swarm=None, fixed=False, opaque=None):
         super(CartesianImage, self).__init__(image_id=image_id, previous_image_id=previous_image_id,
                                              previous_frame_number=previous_frame_number, group_id=group_id,
-                                             swarm=swarm, opaque=opaque)
+                                             swarm=swarm, fixed=fixed, opaque=opaque)
         self.node = node
         self.terminal = terminal
         self.spring = spring
