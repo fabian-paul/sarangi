@@ -283,6 +283,6 @@ if __name__ == '__main__':
         xyz = read_coor(args.coordinates)
         # TODO: load box information
         with mdtraj.formats.DCDTrajectoryFile(args.trajectory, 'w') as f:
-            f.write(xyz)
+            f.write(xyz*10.)
 
     print('end archivist')
