@@ -1,6 +1,16 @@
 set -e
 #rm velout* out* init* || true
 
+# handling of fixed images, just copy in.coor, in.xsc -> out.dcd, init.dcd
+if [ "$STRING_IMAGE_FIXED" == "1" ]
+then
+  echo "running fake simulation"
+  python $STRING_ARCHIVIST fake_simulation --trajectory out.dcd --coordinates in.coor --nobox
+  cp out.dcd init.dcd
+  return
+fi
+echo "continuing normally"
+
 # adjust path to you namd2 executable here
 mynamd=$HOME/opt/NAMD_git/namd2
 

@@ -5,6 +5,7 @@ from sarangi import root
 
 
 top_fname = root() + '/setup/da.psf'
+pdb_fname = root() + '/setup/system.pdb'
 dihedrals = \
    {'psi1': [1, 4, 10, 12],  # atom indices are 1-based (NAMD compatible)
     'psi2': [12, 14, 20, 22],
@@ -30,7 +31,9 @@ dihedrals = \
 def to_npy(fname_traj, fname_base_out, sim_id, **kwargs):
     traj = mdtraj.load(fname_traj, top=top_fname)
     names = sorted(dihedrals.keys())
-    dtype = np.dtype([('endtoend', np.float32)] + [('cossin_'+n, np.float32, 2) for n in names])
+    dtype = np.dtype([('endtoend', np.float32), ('RMSDtofolded', np.float32)] + [('cossin_'+n, np.float32, 2) for n in names])
+
+    # compute dihedrals
     indices = np.array([dihedrals[n] for n in names], dtype=int) - 1
     dihedral_trajs = mdtraj.compute_dihedrals(traj, indices, periodic=True, opt=False)
     T = len(traj)
@@ -39,7 +42,15 @@ def to_npy(fname_traj, fname_base_out, sim_id, **kwargs):
         result['cossin_'+n][:, 0] = np.cos(d)
         result['cossin_'+n][:, 1] = np.sin(d)
     xyz = traj.xyz
-    result['endtoend'][:] = np.linalg.norm(xyz[:, 0, :]-xyz[:, 93, :], axis=1)*10. # Angstrom
+
+    # compute end-to-end distance
+    result['endtoend'][:] = np.linalg.norm(xyz[:, 0, :]-xyz[:, 93, :], axis=1)*10.  # Angstrom
+
+    # compute RMSD
+    bb_indices = traj.top.select('backbone')
+    reference = mdtraj.load(pdb_fname)
+    result['RMSDtofolded'][:] = mdtraj.rmsd(traj, reference, atom_indices=bb_indices)*10.  # Angstrom
+
     fname_npy = fname_base_out + '.npy'
     print(fname_traj, '->', fname_npy)
     np.save(fname_npy, result)

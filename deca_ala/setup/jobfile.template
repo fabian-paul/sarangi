@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e
+set -e -x
 
 {environment}
 
@@ -18,6 +18,7 @@ if [ "$STRING_SWARM" == "1" ]
 then
   cp $STRING_SIM_ROOT/setup/production_swarm.inp .
   cp $STRING_SIM_ROOT/setup/propagate_swarm.sh .
+  cp $STRING_SIM_ROOT/setup/system.pdb .
   source propagate_swarm.sh
 else
   exit 25
@@ -28,7 +29,9 @@ python $STRING_ARCHIVIST store --trajectory out.dcd --colvarstraj out.colvars.tr
 # special handling of intial state
 cp init.dcd $STRING_BASE/${{STRING_IMAGE_ID}}_init.dcd
 mkdir -p $STRING_OBSERVABLES_BASE/colvars_init
-cp init.colvars.traj $STRING_OBSERVABLES_BASE/colvars_init/${{STRING_IMAGE_ID}}.colvars.traj
+if [ -f init.colvars.traj ]; then
+  cp init.colvars.traj $STRING_OBSERVABLES_BASE/colvars_init/${{STRING_IMAGE_ID}}.colvars.traj
+fi
 
 # compute order parameters as defined in the plan file (generic command)
 python $STRING_SARANGI_SCRIPTS/bow obs --ignore_colvars_traj --image $STRING_IMAGE_ID
