@@ -693,14 +693,15 @@ class String(object):
 
         # collect all means, in the same time check that all the coordinate dimensions and
         # coordinate names are the same across the string
-        from .util import bisect_decreasing, dict_to_structured, structured_to_dict, IDEAL_GAS_CONSTANT_KCAL_MOL_K
         from collections import defaultdict
+        from .util import dict_to_structured, IDEAL_GAS_CONSTANT_KCAL_MOL_K
         if not self.is_homogeneous and reparametrize:
             raise RuntimeError('Not all nodes live in exactly the same colvars space. This is not supported by this function.')
 
-        max_spring_constant = 1000.
+        max_spring_constant = 300.
 
         if update_fields:
+            # collect all the fields that have been used in any image or are not connected in any canonical image pair
             fields = set()
             images_ordered = self.images_ordered
             for a, b in zip(images_ordered[0:-1], images_ordered[1:]):
@@ -717,8 +718,6 @@ class String(object):
         current_means = []
         for image in self.images_ordered:
             colvars = image.colvars(subdir=subdir, fields=real_fields)
-            #if reparametrize and (set(colvars.fields) != set(real_fields) or colvars.dims != dims):
-            #    raise RuntimeError('colvars fields / dimensions are inconsistent across the string. First inconsistency in image %s.' % image.image_id)
             # The geometry functions in the reparametrization module work with 2-D numpy arrays, while the colvar
             # class used recarrays and (1, n) shaped ndarrays. We therefore convert to plain numpy and strip extra dimensions.
             current_means.append(structured_to_flat(colvars.mean, fields=real_fields)[0, :])
@@ -735,16 +734,19 @@ class String(object):
         # do the string reparametrization
         if reparametrize:
             from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
+            from .util import bisect_decreasing
             ordered_means = reorder_nodes(nodes=current_means)  # in case the string "coiled up", we reorder its nodes
             if n_nodes is not None:
                 print('running bisecion to find the correct parameter for reparametrization ')
-                i_d, n_solution = bisect_decreasing(lambda x: len(compute_equidistant_nodes_2(old_nodes=ordered_means, d=x)),
-                            a=self.image_distance*n_atoms**0.5, b=self.image_distance*n_atoms**0.5, level=n_nodes+1, return_y=True)
+                i_d, n_solution = bisect_decreasing(
+                    lambda x: len(compute_equidistant_nodes_2(old_nodes=ordered_means, d=x, d_skip=0.5*x, do_warn=False)),
+                    a=self.image_distance * n_atoms ** 0.5, b=self.image_distance * n_atoms ** 0.5, level=n_nodes,
+                    accuracy=0.5, precision=0, return_y=True)
                 print('result is', i_d, n_solution)
                 del n_solution
                 self.image_distance = i_d / n_atoms**0.5
             nodes = compute_equidistant_nodes_2(old_nodes=ordered_means, d=self.image_distance * n_atoms**0.5,
-                                                d_skip=self.image_distance * n_atoms**0.5 / 2)
+                                                d_skip=0.5 * self.image_distance * n_atoms**0.5)
             # do some self-consistency tests of the reparametrization step
             eps = 1E-6
             # check distances
@@ -761,7 +763,7 @@ class String(object):
         else:
             nodes = current_means
 
-        # compute new spring constants TODO: adjust spring according to displacement!
+        # compute new spring constants TODO: adjust spring according to displacement! (see report)
         springs = defaultdict(dict)
         T = 303.15
         RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * T
@@ -769,11 +771,11 @@ class String(object):
             a = flat_to_structured(x[np.newaxis, :], fields=real_fields, dims=dims)
             b = flat_to_structured(y[np.newaxis, :], fields=real_fields, dims=dims)
             for f in real_fields:
-                k = RT / np.linalg.norm(a[f] - b[f])**2
+                k = RT / np.linalg.norm(a[f] - b[f])**2   # TODO: change me!
                 #current_spring = springs[i][f] if f in springs[i] else 0.
-                springs[i][f] = min(k, max_spring_constant)
+                springs[i][f] = min(k, max_spring_constant)  # TODO: change me!
                 #current_spring = springs[i + 1][f] if f in springs[i + 1] else 0.
-                springs[i + 1][f] = min(k, max_spring_constant)
+                springs[i + 1][f] = min(k, max_spring_constant)  # TODO: change me!
 
         iteration = self.iteration + 1
         new_string = self.empty_copy(iteration=iteration, previous=self)
@@ -1798,6 +1800,7 @@ class String(object):
 
     def smooth(self, filter_width=3, points='mean'):
         'Smooth the string by applying an moving average filter to the nodes'
+        from .reparametrization import reorder_nodes, compute_equidistant_nodes_2
         fields = self.images_ordered[0].fields
         nodes = []
         for im in self.images_ordered:
@@ -1894,6 +1897,24 @@ def rounds_same_load(s, n):
     return s
 
 def load(branch='AZ', offset=-1):
+    r'''Find specific iteration of the string in $STRING_SIM_ROOT/strings/ and recover it from the yaml file.
+
+    Parameters
+    ----------
+    branch: str
+        name of the branch to load
+    offset: int
+        If this number is positive, load string with iteration number equal to offset.
+        If this number is negative, count iteration numbers backwards starting
+        from the maximal iteration (which can currently be found on disk).
+        -1 (default) loads the highest iteration.
+        -2 loads the second to last iteration and so on.
+        This corresponds to Python array indexing.
+
+    Returns
+    -------
+    A String object.
+    '''
     return String.load(branch=branch, offset=offset)
 
 

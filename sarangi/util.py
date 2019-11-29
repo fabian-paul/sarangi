@@ -13,7 +13,7 @@ __all__ =['find', 'mkdir', 'dict_to_structured', 'structured_to_dict', 'structur
 IDEAL_GAS_CONSTANT_KCAL_MOL_K = 1.985877534E-3  # in kcal/mol/K
 DEFAULT_TEMPERATURE = 303.15
 
-def abspath_with_symlinks(p):
+def abspath_with_symlinks(p: str):
     if 'PWD' in os.environ:
        curr_path = os.environ['PWD']
        return os.path.normpath(os.path.join(curr_path, p))
@@ -46,7 +46,7 @@ def root():
                                ' no .sarangirc file was found.')
 
 
-def is_sim_id(s):
+def is_sim_id(s: str):
     fields = s.split('_')
     if len(fields) != 4:
         return False
@@ -81,7 +81,7 @@ def length_along_segment(a, b, x, clamp=True):
     return s
 
 
-def dict_to_structured(config):
+def dict_to_structured(config: dict):
     'Convert dictionary with numerical values to numpy structured array'
     dtype_def = []
     for name, value in config.items():
@@ -100,7 +100,7 @@ def dict_to_structured(config):
     return array
 
 
-def structured_to_dict(array):
+def structured_to_dict(array: np.ndarray):
     'Convert numpy structured array to python dictionary'
     config = {}
     for n in array.dtype.names:
@@ -114,7 +114,7 @@ def structured_to_dict(array):
     return config
 
 
-def exactly_2d(ary):
+def exactly_2d(ary: np.ndarray):
     ary = np.asanyarray(ary)
     if ary.ndim == 0:
         return ary.reshape(1, 1)
@@ -126,7 +126,7 @@ def exactly_2d(ary):
         raise ValueError('Cannot convert array to 2D. ary.ndim is ' + str(ary.ndim))
 
 
-def structured_to_flat(recarray, fields=None):
+def structured_to_flat(recarray: np.ndarray, fields=None):
     r'''Convert numpy structured array to a flat numpy ndarray
 
     :param recarray: numpy recarray
@@ -334,11 +334,32 @@ def widest_path(matrix, start=0, stop=-1):
     return path
 
 
-def bisect_decreasing(func, a, b, level=0., max_iter=50, tol=1.E-5, return_y=False):
-    'Find a root x* of func(x*)==level using the bisection method. Algorithm will extend [a, b] if [f(a), f(b)] does not bracket level.'
+def bisect_decreasing(func, a, b, level=0., max_iter=50, accuracy=1.E-5, precision=1.E-5, return_y=False):
+    r'''Find a root x* of func(x*)==level using the bisection method, assuming that func is decreasing. Algorithm will extend [a, b] if [f(a), f(b)] does not bracket level.
+
+    Parameters
+    ----------
+    a: float
+        Guess for one bound of a root-bracketing interval.
+
+    b: float
+        Guess for one bound of a root-bracketing interval.
+
+    level: float
+        The right-hand-side of the equation  func(x*) = level
+
+    accuracy: float, default = 1.E-5
+        threshold on the approximation error in the independent variable
+        Function succeeds if either of accuracy or precision thresholds have been met.
+
+    precision: float, default = 1.E-5
+        threshold on the spread of approximation error (error in the independent variable)
+        Function succeeds if either of accuracy or precision thresholds have been met.
+    '''
     a_, b_ = a, b
     a = min(a_, b_)
     b = max(a_, b_)
+    # if (a, b) does not bracket a root (assuming monotonic decreasing behaviour of func), extend the interval.
     for _ in range(max_iter):
         fa = func(a) - level
         if fa > 0:
@@ -357,7 +378,7 @@ def bisect_decreasing(func, a, b, level=0., max_iter=50, tol=1.E-5, return_y=Fal
         c = 0.5*(a + b)
         y = func(c) - level
         #print('y', y)
-        if y == 0 or 0.5*(b - a) <= tol:
+        if np.abs(y) < accuracy or 0.5*(b - a) <= precision:
             if return_y:
                 return c, y + level
             else:
