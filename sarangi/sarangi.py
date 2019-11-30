@@ -138,6 +138,7 @@ class Group(object):
 
     def propagate(self, random_number, queued_jobs, dry=False, cpus_per_replica=32):
         'Run or submit to queuing system the propagation script'
+
         if self.propagated:
             return self
 
@@ -239,7 +240,7 @@ class String(object):
 
     @property
     def is_homogeneous(self) -> bool:
-        'True, if all the nodes live in the same collective variable space (uniform dimension).'
+        'True, if all the nodes live in the same controlled collective variable space (uniform dimension).'
         fields = self.images_ordered[0].fields
         for im in self.images_ordered[1:]:
             if im.fields != fields:
@@ -291,6 +292,10 @@ class String(object):
 
     def propagate(self, wait=False, run_locally=False, dry=False, max_workers=1, cpus_per_replica=32):
         'Propagated the String (one iteration). Returns a modified copy.'
+        if not self.check_against_string_on_disk(strict=True):
+            warnings.warn('Current (in-memory) state of the string ways not written to the plan file. '
+                          'Propagation might fail. Continuing and hoping for the best...')
+
         if self.propagated:
             return self
 
@@ -326,7 +331,8 @@ class String(object):
             group.propagate(random_number=random_number, queued_jobs=queued_jobs, dry=dry, cpus_per_replica=cpus_per_replica)
             propagated_images.update(group.images)
 
-        return self.empty_copy(images=propagated_images)  # FIXME: why is this needed?
+        #return self.empty_copy(images=propagated_images)  # FIXME: why is this needed?
+        return self
 
     def connected(self, threshold=0.1):
         'Test if all images are overlapping'
@@ -380,16 +386,22 @@ class String(object):
             p = self.images_ordered[i]
         elif isinstance(i, float):
             p = self.images[i]
+        elif isinstance(i, Image):
+            p = i
         else:
             raise ValueError('parameter i has incorrect type')
         if isinstance(j, int):
             q = self.images_ordered[j]
         elif isinstance(j, float):
             q = self.images[j]
+        elif isinstance(j, Image):
+            q = j
         else:
             raise ValueError('parameter j has incorrect type')
 
-        real_fields = p.fields  # use same cvs as node of p
+        if set(p.fields) != set(q.fields):
+            raise RuntimeError('Images have different controlled collective variable spaces. Cannot add interpolating image. Please use bisect_and_lift_at instead.')
+        real_fields = p.fields  # use same cvs as node of p (see bisect_and_lift for a version with dynamic fields)
 
         if where == 'mean':
             x = recarray_average(p.colvars(subdir=subdir, fields=real_fields).mean, q.colvars(subdir=subdir, fields=real_fields).mean)
@@ -423,6 +435,8 @@ class String(object):
         if any(new_image_id == im.image_id for im in self.images.values()):
             raise RuntimeError('Bisection produced new image id which is not unique. This should not happen.')
 
+        # TODO: in principle we should adjust the spring constants here
+
         new_image = best_image.__class__(image_id=new_image_id, previous_image_id=best_image.image_id,
                                          previous_frame_number=best_step, node=x, spring=p.spring.copy(), group_id=None,
                                          swarm=best_image.swarm)
@@ -432,9 +446,25 @@ class String(object):
         #   self.images[new_image.seq] = new_image
         return new_image
 
-    def bisect(self, threshold=0.1, write=False):
-        'Add intermediate images at locations of low overlap between images.'
-        ov, ids = self.overlap(return_ids=True)
+    def bisect(self, threshold: float=0.1, write: bool=False):
+        r'''Add intermediate images at locations of low overlap between images.
+
+            Parameters
+            ----------
+            threshold: float
+                If the overlap between neighboring images is less than this threshold, insert an image.
+
+            write: bool
+                Write updated sting to yaml file (needed so that `propagate` will work properly).
+
+            Notes
+            -----
+            `interpolate` is an alias to this method.
+        '''
+        if not self.is_homogeneous:
+            raise RuntimeError('String must have the controlled space in all images. For varying space use bisect_and_lift.')
+        controlled_fields = self.images_ordered[0].fields  # just stick with the current controlled fields
+        ov, ids = self.overlap(return_ids=True, algorithm='plane', fields=controlled_fields)
         new_images = []
         for pair, o in zip(ids, ov):
             if o < threshold:
@@ -488,13 +518,16 @@ class String(object):
         # TODO: this property name is confusing, pick a better one
         return '{root}/strings/{branch}_{iteration:03d}'.format(root=root(), branch=self.branch, iteration=self.iteration)
 
-    def check_against_string_on_disk(self):
+    def check_against_string_on_disk(self, strict: bool=False):
         'Compare currently loaded string to the version on disk. Check that read-only elements were not modified.'
         try:
             on_disk = String.load(branch=self.branch, offset=self.iteration)
         except FileNotFoundError:
-            # plan file does not exist, we therefore assume that this is a new string (or new iteration)
-            return True
+            if not strict:
+                # plan file does not exist, we therefore assume that this is a new string (or new iteration)
+                return True
+            else:
+                return False
         # image values written to disk are not allowed to be changed in memory (once a sim_id is assigned, never change record)
         for on_disk_key, on_disk_image in on_disk.images.items():
             if on_disk_key not in self.images:
@@ -505,6 +538,12 @@ class String(object):
                 warnings.warn(('Image %f that has already been written to disk have changed in RAM. ' +
                               'Unless you know exactly what you are doing, the current string cannot be saved.') % on_disk_key)
                 return False
+        if strict:  # check both ways
+            for in_memory_key, im_memory_image in self.images.items():
+                if in_memory_key not in on_disk.images:
+                    return False
+                if not on_disk.images[in_memory_key] == im_memory_image:
+                    return False
         return True
 
     def write_yaml(self, backup=True, message=None, _override=False):
@@ -1134,7 +1173,9 @@ class String(object):
         Order of images in the retuned array/ matrix is the same as in self.images_ordered.
         '''
         from tqdm import tqdm
-        real_fields = self.images_ordered[0].colvars(subdir=subdir, fields=fields).fields
+        #if not self.is_homogeneous:
+        #    raise RuntimeError('Controlled collective variable space must be indentical for all images in string. Please use Image.get_fields_non_overlapping instead.')
+        real_fields = self.images_ordered[0].colvars(subdir=subdir, fields=fields).fields  # monitored space
         ids = []
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
@@ -1888,7 +1929,7 @@ def rounds(s, n):
 
 def rounds_same_load(s, n):
     for _ in range(n):
-        s_new = s.evolve(n_nodes=len(s) + 1)
+        s_new = s.evolve(n_nodes=len(s))
         s_new.write_yaml()
         s_new.propagate(wait=True, run_locally=True)
         s_new.bisect_and_lift(overlap='units', write=True)
