@@ -100,13 +100,21 @@ def dict_to_structured(config: dict):
     return array
 
 
-def structured_to_dict(array: np.ndarray):
+def structured_to_dict(array: np.ndarray, keep_fat_scalars=False):
     'Convert numpy structured array to python dictionary'
+    if isinstance(array, np.void):
+        raise ValueError('structured_to_dict does not yet support conversion of single elements of structured arrays')
+    if not isinstance(array, (np.ndarray, np.recarray)):
+        raise ValueError('Unsupported type of array parameter.')
+    if array.dtype.names is None:
+        raise ValueError('Array must be structured and not flat.')
     config = {}
     for n in array.dtype.names:
-        # TODO: what about lists with a single element?
         if len(array.dtype.fields[n][0].shape) == 1:  # vector type
-            config[n] = [float(x) for x in array[n][0]]
+            if array.dtype.fields[n][0].shape[0] == 1 and not keep_fat_scalars:  # fat scalar
+                config[n] = float(array[n][0])
+            else:
+                config[n] = [float(x) for x in array[n][0]]  # true vector
         elif len(array.dtype.fields[n][0].shape) == 0:  # scalar type
             config[n] = float(array[n])
         else:
@@ -114,12 +122,15 @@ def structured_to_dict(array: np.ndarray):
     return config
 
 
-def exactly_2d(ary: np.ndarray):
+def exactly_2d(ary: np.ndarray, add_frame_axis):
     ary = np.asanyarray(ary)
     if ary.ndim == 0:
         return ary.reshape(1, 1)
     elif ary.ndim == 1:
-        return ary[:, np.newaxis]
+        if add_frame_axis:
+            return ary[np.newaxis, :]
+        else:
+            return ary[:, np.newaxis]
     elif ary.ndim == 2:
         return ary 
     else:
@@ -138,15 +149,18 @@ def structured_to_flat(recarray: np.ndarray, fields=None):
     '''
 
     if recarray.dtype.names is None:
+        warnings.warn('Calling structured_to_flat on an array that is already flat. This is deprecated.')
         # conventional ndarray
         if fields is not None and not isinstance(fields, AllType):
             warnings.warn('User requested fields in a particular order %s, but input is already flat. '
-                          'Continuing and hoping for the best.' % str(fields))
-        n = recarray.shape[0]
-        return recarray.reshape((n, -1))
+                          'Continuing without selection/ordering and hoping for the best.' % str(fields))
+        #n = recarray.shape[0]
+        #return recarray.reshape((n, -1))
+        return exactly_2d(recarray, add_frame_axis=False)
     else:
         if len(recarray.shape) == 0:
             n = 1
+            warnings.warn('A single element of a structured array was passed to structured_to_flat, this is deprecated.')
         else:
             n = recarray.shape[0]
         if fields is None or isinstance(fields, AllType):
@@ -156,16 +170,29 @@ def structured_to_flat(recarray: np.ndarray, fields=None):
         m = idx[-1]
         x = np.zeros((n, m), dtype=float)
         for name, start, stop in zip(fields, idx[0:-1], idx[1:]):
-            x[:, start:stop] = exactly_2d(recarray[name])
+            x[:, start:stop] = exactly_2d(recarray[name], add_frame_axis=False)
         return x
 
 
 def flat_to_structured(array, fields, dims):
-    dtype = np.dtype([(name, np.float64, dim) if dim > 1 else (name, np.float32) for name, dim in zip(fields, dims)])
+    if array.ndim != 2:
+        raise RuntimeError('flat array must be 2D.')
+    dtype = np.dtype([(name, np.float64, dim) if dim > 1 else (name, np.float64) for name, dim in zip(fields, dims)])
     indices = np.concatenate(([0], np.cumsum(dims)))
-    # TODO: create simple structured array instead of recarray?
-    colgroups = [array[:, start:stop] for name, start, stop in zip(fields, indices[0:-1], indices[1:])]
-    return np.core.records.fromarrays(colgroups, dtype=dtype)
+    if array.dtype.names is not None:
+        raise ValueError('array parameter must be flat and not structured.')
+    structured = np.zeros((len(array),), dtype=dtype)
+    if indices[-1] != array.shape[1]:
+        raise ValueError('Shape of array is not compatible with dims.')
+    if len(fields) != len(dims):
+        raise ValueError('Number of fields and dims does not match.')
+    for name, start, stop in zip(fields, indices[0:-1], indices[1:]):
+        structured[name] = array[:, start:stop]
+    return structured
+    #print('colgroups', colgroups)
+    #print('dtype', dtype)
+    # colgroups = [array[:, start:stop] for name, start, stop in zip(fields, indices[0:-1], indices[1:])]
+    #return np.core.records.fromarrays(colgroups, dtype=dtype)
 
 
 def recarray_average(a, b):

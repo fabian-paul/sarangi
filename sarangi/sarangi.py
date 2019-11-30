@@ -756,10 +756,14 @@ class String(object):
         dims = colvars_0.dims
         current_means = []
         for image in self.images_ordered:
-            colvars = image.colvars(subdir=subdir, fields=real_fields)
             # The geometry functions in the reparametrization module work with 2-D numpy arrays, while the colvar
             # class used recarrays and (1, n) shaped ndarrays. We therefore convert to plain numpy and strip extra dimensions.
-            current_means.append(structured_to_flat(colvars.mean, fields=real_fields)[0, :])
+            if image.fixed:
+                x0 = image.x0(subdir=subdir, fields=real_fields)
+                current_means.append(structured_to_flat(x0, fields=real_fields)[0, :])
+            else:
+                colvars = image.colvars(subdir=subdir, fields=real_fields)
+                current_means.append(structured_to_flat(colvars.mean, fields=real_fields)[0, :])
 
         if rmsd:
             n_atoms = len(real_fields)

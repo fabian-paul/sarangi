@@ -1,7 +1,7 @@
 import numpy as np
 import os
 import warnings
-from .util import All, AllType, structured_to_flat, length_along_segment, exactly_2d, recarray_dims
+from .util import All, AllType, structured_to_flat, length_along_segment, recarray_dims
 
 __all__ = ['Colvars', 'overlap_svm']
 
@@ -9,8 +9,16 @@ __all__ = ['Colvars', 'overlap_svm']
 # TODO: move to some other subpackage
 def overlap_svm(X_self, X_other, indicator='max', return_classifier=False):
     import sklearn.svm
-    X_self = exactly_2d(X_self)
-    X_other = exactly_2d(X_other)
+    if X_self.ndim != 2:
+        raise ValueError('X_self must be 2-D')
+    if X_self.dtype not in [np.float64, np.float32]:
+        raise ValueError('X_self must be an array of floating point numbers')
+    if X_other.ndim != 2:
+        raise ValueError('X_other must be 2-D')
+    if X_other.dtype not in [np.float64, np.float32]:
+        raise ValueError('X_other must be an array of floating point numbers')
+    if X_self.shape[1] != X_other.shape[1]:
+        raise ValueError('X_self and X_other must have the same number of dimensions.')
     X = np.vstack((X_self, X_other))
     n_self = X_self.shape[0]
     n_other = X_other.shape[0]
@@ -55,6 +63,10 @@ class Colvars(object):
         fname = folder + '/' + base
         if os.path.exists(fname + '.npy'):
             self._colvars = np.load(fname + '.npy')
+            if self._colvars.dtype.names is None:
+                raise ValueError('File %s.npy does not contain a structured array with CV name information. Giving up.' % fname)
+            if len(self._colvars.shape) != 1:
+                raise ValueError('File %s.npy has an incorrect shape and does not seem to contain frame data.' % fname)
             self._type = 'npy'
             if not isinstance(fields, AllType):
                 self._colvars = self._colvars[fields]
@@ -237,11 +249,13 @@ class Colvars(object):
     def overlap_3D_units(self, other, indicator='max'):
         r'''Compute the minimum of the overlap scores for each Cartesian subunit.
         '''
+        from .util import exactly_2d
         if set(self.fields) != set(other.fields):
             raise ValueError('Attempted to compute the overlap of two sets with different dimensions. Giving up.')
         overlap_1D = []
         for field in self.fields:
-            o = overlap_svm(self._colvars[field], other._colvars[field], indicator=indicator)
+            o = overlap_svm(exactly_2d(self._colvars[field], add_frame_axis=False),
+                            exactly_2d(other._colvars[field], add_frame_axis=False), indicator=indicator)
             overlap_1D.append(o)
         return np.min(overlap_1D)  # or return product? / sum log?
 

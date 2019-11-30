@@ -326,7 +326,7 @@ class Image(object):
         base = '{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
             branch=branch, iteration=int(iteration), id_minor=int(id_minor), id_major=int(id_major))
         #self._x0[subdir] =
-        return Colvars(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number]
+        return Colvars(folder=folder + subdir, base=base, fields=fields)[self.previous_frame_number:self.previous_frame_number + 1]
         #return self._x0[subdir]
 
     def potential(self, colvars, factor=1.0, out=None):
