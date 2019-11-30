@@ -4,7 +4,7 @@ from sarangi.colvars import overlap_svm, Colvars
 __all__ = ['main_overlap', 'parse_args_overlap']
 
 
-def load_matrix(branch, iteration, subdir='colvars', reduction='min'):
+def load_matrix(branch: str, iteration: int, subdir: str='colvars', reduction='min'):
     import os
     import csv
     import numpy as np
@@ -34,11 +34,11 @@ def load_matrix(branch, iteration, subdir='colvars', reduction='min'):
     return symm_matrix
 
 
-def load_tensor(branch, iteration, subdir='colvars'):
+def load_tensor(branch: str, iteration: int, subdir: str='colvars'):
     raise NotImplementedError('load_tensor not implemented yet')
 
 
-def load_pair(image_id_a: str, image_id_b: str, subdir='colvars', try_swapped=True):
+def load_pair(image_id_a: str, image_id_b: str, subdir='colvars', try_swapped: bool=True):
     import csv
     branch, iteration, _, _ = image_id_a.split('_')
     fname = '{root}/overlap/{branch}_{iteration:03d}/{subdir}/{image_id}.csv'.format(
@@ -55,7 +55,7 @@ def load_pair(image_id_a: str, image_id_b: str, subdir='colvars', try_swapped=Tr
         pass  # pass and fall through
     # did not find image_id_b
     if try_swapped:
-        return load_pair(image_id_b, image_id_b, subdir=subdir, try_swapped=False)
+        return load_pair(image_id_b, image_id_a, subdir=subdir, try_swapped=False)
     else:
         raise FileNotFoundError('Could not find overlap recorded for image pair %s, %s.' % (image_id_a, image_id_b))
 
@@ -67,7 +67,7 @@ def compute_and_encode_overlap(a: Colvars, b: Colvars):
     return res
 
 
-def write_csv(fname, data):
+def write_csv(fname: str, data: dict):
     some_image_id = next(iter(data.keys()))
     fields = data[some_image_id].keys()
     with open(fname, 'w') as f:
@@ -77,12 +77,12 @@ def write_csv(fname, data):
             f.write(image_id + ', ' + line + '\n')
 
 
-def without_ext(fname):
+def without_ext(fname: str):
     import os
     return os.path.join(os.path.dirname(fname), os.path.basename(fname).split(os.extsep)[0])
 
 
-def file_is_up_to_date(new, old):
+def file_is_up_to_date(new: str, old: list):
     import os
     if not os.path.exists(new):
         return False
@@ -95,7 +95,7 @@ def file_is_up_to_date(new, old):
     return True
 
 
-def main_overlap(branch, iteration, image_id=None, subdir=None, refresh=False):
+def main_overlap(branch: str, iteration: int, image_id: str=None, subdir: str=None, refresh: bool=False):
     r'''Precomputes the overlap between between one image and all others. Stores one csv file per image.
 
     Parameters
