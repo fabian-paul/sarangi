@@ -92,6 +92,8 @@ def compute_equidistant_nodes_2(old_nodes, d, direction=-1, d_skip=None, do_warn
     nodes = np.array(old_nodes)
     if nodes.ndim != 2:
         raise ValueError('old_nodes must be 2-D')
+    if nodes.dtype not in [np.float64, np.float32]:
+        raise ValueError('old_node must be array of floating point numbers')
     i_edge0 = 0
     res = []
     point = nodes[0, :]
@@ -116,6 +118,8 @@ def reorder_nodes(nodes):
     nodes = np.array(nodes)
     if nodes.ndim != 2:
         raise ValueError('nodes must be 2-D and not %d' % nodes.ndim)
+    if nodes.dtype not in [np.float64, np.float32]:
+        raise ValueError('nodes must be array of floating point numbers')
     last = len(nodes) - 1
     available = np.arange(1, len(nodes))
     x = nodes[0]
