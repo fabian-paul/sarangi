@@ -563,9 +563,11 @@ class CompoundImage(Image):
         for restraint_name in self.fields:
             spring_value = self.spring[restraint_name]
             if self.node is not None and restraint_name in self.node.dtype.names:
-                center_value = self.node[restraint_name][0]  # the [0] is because we consistently make recarrays be arrays and canot consist of an isolated record.
+                center_value = self.node[restraint_name][0]  # the [0] is because we consistently make recarrays be arrays that have a dummy time/frame axis and cannot consist of an isolated record.
                 if isinstance(center_value, numbers.Number):
                     center_value_namd = '%f' % center_value
+                elif isinstance(center_value, np.ndarray) and center_value.shape == (1,):  # fat scalar
+                    center_value_namd = '%f' % center_value[0]
                 else:
                     # small hack to keep valid centers that encode an angle (cos and sin must lay on unit circle)
                     if 'cossin' in restraint_name:
