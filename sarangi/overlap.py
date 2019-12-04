@@ -1,5 +1,6 @@
 from sarangi import root
 from sarangi.colvars import overlap_svm, Colvars
+from sarangi.util import exactly_2d
 
 __all__ = ['main_overlap', 'parse_args_overlap']
 
@@ -63,7 +64,8 @@ def load_pair(image_id_a: str, image_id_b: str, subdir='colvars', try_swapped: b
 def compute_and_encode_overlap(a: Colvars, b: Colvars):
     res = {}
     for field in a.fields:
-        res[field] = float(overlap_svm(a[field], b[field]))
+        res[field] = float(overlap_svm(exactly_2d(a[field], add_frame_axis=False),
+                                       exactly_2d(b[field], add_frame_axis=False)))
     return res
 
 
