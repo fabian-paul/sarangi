@@ -81,7 +81,7 @@ def length_along_segment(a, b, x, clamp=True):
     return s
 
 
-def dict_to_structured(config: dict):
+def dict_to_structured(config: dict, allow_numpy=False):
     'Convert dictionary with numerical values to numpy structured array'
     dtype_def = []
     for name, value in config.items():
@@ -91,8 +91,10 @@ def dict_to_structured(config: dict):
             dtype_def.append((name, np.float64))
         elif isinstance(value, int):
             dtype_def.append((name, int))
+        elif isinstance(value, np.ndarray) and allow_numpy:
+            dtype_def.append((name, value.dtype))
         else:
-            raise RuntimeError('unrecognized type %s', type(value))
+            raise RuntimeError('unrecognized type %s of %s', (type(value), value))
     dtype = np.dtype(dtype_def)
     array = np.zeros(1, dtype=dtype)
     for name, value in config.items():
