@@ -343,7 +343,7 @@ def shortest_path(cost_matrix, start, stop):
     return [start] + path[::-1]
 
 
-def widest_path(matrix, start=0, stop=-1):
+def widest_path(matrix, start=0, stop=-1, regularize=False):
     'Compute the widest path (max-capacity path or min-bottleneck path) form start to stop.'
     import scipy.sparse.csgraph
     if matrix.shape[0] != matrix.shape[1]:
@@ -352,6 +352,14 @@ def widest_path(matrix, start=0, stop=-1):
     _, pred = scipy.sparse.csgraph.depth_first_order(mst, i_start=start, directed=False, return_predecessors=True)
     # convert list of predecessors to path
     stop = np.arange(matrix.shape[0])[stop]
+    if pred[stop] == -9999:
+        if regularize:
+            epsilon = min(np.min(matrix[matrix > 0]), 1.E-12)
+            mst = -scipy.sparse.csgraph.minimum_spanning_tree(-(matrix + epsilon))
+            _, pred = scipy.sparse.csgraph.depth_first_order(mst, i_start=start, directed=False,
+                                                             return_predecessors=True)
+        else:
+            raise ValueError('Theres is no path form node %d to node %d in input matrix.' % (start, stop))
     path = [stop]
     u = stop
     while pred[u] != start:

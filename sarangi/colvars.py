@@ -6,7 +6,6 @@ from .util import All, AllType, structured_to_flat, length_along_segment, recarr
 __all__ = ['Colvars', 'overlap_svm']
 
 
-# TODO: move to some other subpackage
 def overlap_svm(X_self, X_other, indicator='max', return_classifier=False):
     import sklearn.svm
     if X_self.ndim != 2:
@@ -134,6 +133,8 @@ class Colvars(object):
     def load_colvar(fname, selection=All, ignore_step_column=True):
         'Load a colvars.traj file and convert to numpy recarray (with field names taken form the file header)'
         rows = []
+        var_names = None
+        dims = None
         with open(fname) as f:
             for line in f:
                 tokens = line.split()
@@ -142,8 +143,15 @@ class Colvars(object):
                 else:
                     values, dims = Colvars.parse_line(tokens)
                     rows.append(values)
-        assert len(var_names) == len(dims)
-        assert len(rows[0]) == sum(dims)
+        if var_names is None:
+            raise RuntimeError('File %s is missing the header.' % fname)
+        if dims is None:
+            raise RuntimeError('Could not infer dimensionality of the data when reading file %s. Possibly file is empty.' % fname)
+        if len(var_names) != len(dims):
+            raise RuntimeError('File %s seems inconsistent, number of variable names in header does not match number data fields.' % fname)
+        if len(rows[0]) != sum(dims):
+            raise RuntimeError(('load_colvar experienced an internal inconsistency in reading file %s. Count of floating point values ' +
+                                ' in the first data recored does not match infered dimensionality.') % fname)
         data = np.array(rows[1:])  # ignore the zero'th row, since this is just the initial condition (in NAMD)
 
         if var_names[0] == 'step':

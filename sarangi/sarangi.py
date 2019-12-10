@@ -64,7 +64,7 @@ def find_realization_in_string(strings, node, subdir='colvars', ignore_missing=T
     best_image = responses[best_idx][0]
     best_step = responses[best_idx][1]['i']
     best_dist = responses[best_idx][1]['d']
-    print('best image is %s at distance %f' % (best_image.image_id, best_dist))
+    print('Best initial point is frame %d from image %s (at distance %f).' % (best_step, best_image.image_id, best_dist))
     return best_image, best_step, best_dist
 
 
@@ -802,7 +802,7 @@ class String(object):
         else:
             overlap_matrix = overlap
         epsilon = 1E-6  # to make sure that the matrix stays formally connected; TODO: find better solution (distance-based!)
-        indices_of_images_to_evolve = widest_path(overlap_matrix + epsilon)
+        indices_of_images_to_evolve = widest_path(overlap_matrix, regularize=True)
         print('length of widest path is', len(indices_of_images_to_evolve))
         print('overlap at bottleneck is', min(overlap_matrix[i, j] for i, j in
                                               zip(indices_of_images_to_evolve[0:-1], indices_of_images_to_evolve[1:])))
@@ -840,10 +840,12 @@ class String(object):
                 k = RT / dist**2  # kcal/mol/A^2  # TODO: fixme! (see manuscript)
                 if f not in new_springs[i] or adjust_springs:
                     #current_spring = new_springs[i][f] if f in new_springs[i] else 0.
-                    new_springs[i][f] = min(k, max_spring_constant)
+                    #new_springs[i][f] = min(k, max_spring_constant)  # TODO: fixme (see manuscript)
+                    new_springs[i][f] = 50.
                 if f not in new_springs[i + 1] or adjust_springs:
                     #current_spring = new_springs[i + 1][f] if f in new_springs[i + 1] else 0.
-                    new_springs[i + 1][f] = min(k, max_spring_constant)
+                    #new_springs[i + 1][f] = min(k, max_spring_constant)  # TODO: fixme (see manuscript)
+                    new_springs[i + 1][f] = 50.
 
 
         # create the actual string object
@@ -984,9 +986,8 @@ class String(object):
             print('Adding new image between', a.image_id, 'and', b.image_id)
             new_image = self.bisect_and_lift_at(a, b, insert=False, threshold=threshold)
             new_images.append(new_image)
-        for im in new_images:
-            print('Created new image', im.image_id)
-            self.add_image(im)
+            print('Created new image', new_image.image_id)
+            self.add_image(new_image)
         if write:
             self.write_yaml(message='filled gaps and lifted')
         return new_images
@@ -1029,7 +1030,7 @@ class String(object):
         y = b.colvars(subdir=subdir)
         # x.fields and y.fields will contain all fields and not only the ones that are currently under control
 
-        # now add new fields, if required (the current node contains only the cvs that are already known, need to go back to x0 to look at all dimensions)
+        # now add new fields, if required (the current node contains only the CVs that are already under control, need to go back to x0 to look at all monitored dimensions)
         x0 = a.x0(subdir=subdir)  # only needed for new fields
         y0 = b.x0(subdir=subdir)  # ditto
 
@@ -1057,7 +1058,7 @@ class String(object):
             #    new_spring[field] = RT * np.linalg.norm(a_node_f - b_node_f)**-2.  # RMSD or not???
             #else:
             # TODO: implement proper solution! (see manuscript)
-            new_spring[field] = 10.
+            new_spring[field] = 50.
         # now add the known fields
         for field in set(a.fields) & set(b.fields):
             new_node[field] = 0.5*(a.node[field] + b.node[field])
@@ -1146,27 +1147,28 @@ class String(object):
         elif order == 'shortest':
             n = len(self)
             print('computing the overlap matrix')
-            overlap_matrix = np.zeros((n, n)) + np.nan
+            overlap_matrix = self.overlap(subdir=subdirs, fields=fields, algorithm=overlap, matrix=True)
+            #overlap_matrix = np.zeros((n, n)) + np.nan
             #distance_matrix = np.array((n, n))
             # find the overlaps for all pairs of nodes
-            for i, a in enumerate(tqdm(self.images_ordered)):
-                overlap_matrix[i, i] = 0.
-                for j_excess, b in enumerate(self.images_ordered[i + 1:]):
-                    j = i + 1 + j_excess
-                    if overlap == 'units':
-                        overlap_matrix[i, j] = a.overlap_3D_units(b, subdir=subdirs, fields=fields)
-                    else:
-                        overlap_matrix[i, j] = a.overlap_plane(b, subdir=subdirs, fields=fields)
-                    overlap_matrix[j, i] = overlap_matrix[i, j]
-                    #distance_matrix[i, j] = recarray_norm(recarray_difference(a.node, b.node), rmsd=True)
-                    #distance_matrix[j, i] = distance_matrix[i, j]
-            overlap_matrix[-1, -1] = 0.
+            #for i, a in enumerate(tqdm(self.images_ordered)):
+            #    overlap_matrix[i, i] = 0.
+            #    for j_excess, b in enumerate(self.images_ordered[i + 1:]):
+            #        j = i + 1 + j_excess
+            #        if overlap == 'units':
+            #            overlap_matrix[i, j] = a.overlap_3D_units(b, subdir=subdirs, fields=fields)
+            #        else:
+            #            overlap_matrix[i, j] = a.overlap_plane(b, subdir=subdirs, fields=fields)
+            #        overlap_matrix[j, i] = overlap_matrix[i, j]
+            #        #distance_matrix[i, j] = recarray_norm(recarray_difference(a.node, b.node), rmsd=True)
+            #        #distance_matrix[j, i] = distance_matrix[i, j]
+            #overlap_matrix[-1, -1] = 0.
             # now find the min-bottleneck path
             # TODO: play around with different score: e.g. 1/overlap_matrix as distance score
             #weight_matrix = np.where(overlap_matrix > 0, 1. - overlap_matrix, 1. + alpha*distance_matrix)  # this might require a bit of experimentation
             print('finding the widest path')
-            epsilon = 1.E-6  # TODO: do this distance-based instead of this naive regularization
-            path = widest_path(overlap_matrix + epsilon)
+            path = widest_path(overlap_matrix, regularize=True)
+            print(' '.join([str(i) for i in path]))
             pairs = [(a,b) for a, b in zip(path[0:-1], path[1:])]
             overlap = [overlap_matrix[a, b] for a, b in pairs]
             print('bottleneck has overlap:', min(overlap))
@@ -1176,26 +1178,43 @@ class String(object):
             raise ValueError('Unknown value of `order`. Must be one of "sequential" or "shortest".')
 
 
-    def overlap(self, subdir='colvars', fields=All, algorithm='plane', indicator='max', matrix=False, return_ids=False):
+    def overlap(self, subdir='colvars', fields=All, algorithm='units', indicator='max', matrix=False, return_ids=False, fallback_to_geometry=True, epsilon=None):
         r'''Compute the overlap (SVM) between images of the string.
+
+        Paramters
+        ---------
+        fields: list or All
+            Fields in monitored space to use for overlap computation.
 
         Notes
         -----
         Order of images in the retuned array/ matrix is the same as in self.images_ordered.
         '''
         from tqdm import tqdm
+        from .util import recarray_difference, recarray_norm
         #if not self.is_homogeneous:
         #    raise RuntimeError('Controlled collective variable space must be indentical for all images in string. Please use Image.get_fields_non_overlapping instead.')
         real_fields = self.images_ordered[0].colvars(subdir=subdir, fields=fields).fields  # monitored space
         ids = []
+        if epsilon is None:  # set epsilon to 1/(swarm size)
+            epsilon = 1.0 / len(self.images_ordered[0].colvars(subdir=subdir, fields=fields))
         if not matrix:
             o = np.zeros(len(self.images_ordered) - 1) + np.nan
             for i, (a, b) in tqdm(enumerate(zip(self.images_ordered[0:-1], self.images_ordered[1:]))):
                 try:
                     if algorithm=='plane':
-                        o[i] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                        ov = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
                     else:
-                        o[i] = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                        ov = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                    if ov < epsilon and fallback_to_geometry:
+                        common_fields = list(set(a.fields) & set(b.fields))  # these are in controlled space!
+                        x = a.colvars(subdir=subdir, fields=common_fields).mean
+                        y = b.colvars(subdir=subdir, fields=common_fields).mean
+                        assert set(y.dtype.names) == set(common_fields)
+                        assert set(x.dtype.names) == set(common_fields)
+                        mu = len(common_fields)**-0.5
+                        ov = epsilon * np.exp(-mu * recarray_norm(recarray_difference(x, y)))
+                    o[i] = ov
                     ids.append((a.seq, b.seq))
                 except FileNotFoundError as e:
                     warnings.warn(str(e))
@@ -1210,10 +1229,19 @@ class String(object):
                 for j, b in enumerate(self.images_ordered[i+1:]):
                     try:
                         if algorithm == 'plane':
-                            o[i, i + j + 1] = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                            ov = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
                         else:
-                            o[i, i + j + 1] = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
-                        o[i + j + 1, i] = o[i, i + j + 1]
+                            ov = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                        if ov < epsilon and fallback_to_geometry:
+                            common_fields = list(set(a.fields) & set(b.fields))  # these are in controlled space!
+                            x = a.colvars(subdir=subdir, fields=common_fields).mean
+                            y = b.colvars(subdir=subdir, fields=common_fields).mean
+                            assert set(y.dtype.names) == set(common_fields)
+                            assert set(x.dtype.names) == set(common_fields)
+                            mu = len(common_fields)**-0.5
+                            ov = epsilon * np.exp(-mu * recarray_norm(recarray_difference(x, y)))
+                        o[i, i + j + 1] = ov
+                        o[i + j + 1, i] = ov
                     except FileNotFoundError as e:
                         warnings.warn(str(e))
             o[-1, -1] = 0.
@@ -1484,21 +1512,21 @@ class String(object):
         return mbar, xaxis
 
 
-    @staticmethod
-    def overlap_gaps(matrix, threshold=0.99):
-        'Indentify the major gaps in the (thermodynamic) overlap matrix'
-        import msmtools
-        n = matrix.shape[0]
-        if matrix.shape[1] != n:
-            raise ValueError('matrix must be square')
-        di = np.diag_indices(n)
-        matrix = matrix.copy()
-        matrix[di] = 0
-        c = matrix.sum(axis=1)
-        matrix[di] = c
-        T = matrix / (2 * c[:, np.newaxis])
-        m = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
-        return msmtools.analysis.pcca(T, m)
+    #@staticmethod
+    #def overlap_gaps(matrix, threshold=0.99):
+    #    'Indentify the major gaps in the (thermodynamic) overlap matrix'
+    #    import msmtools
+    #    n = matrix.shape[0]
+    #    if matrix.shape[1] != n:
+    #        raise ValueError('matrix must be square')
+    #    di = np.diag_indices(n)
+    #    matrix = matrix.copy()
+    #    matrix[di] = 0
+    #    c = matrix.sum(axis=1)
+    #    matrix[di] = c
+    #    T = matrix / (2 * c[:, np.newaxis])
+    #    m = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
+    #    return msmtools.analysis.pcca(T, m)
 
 
     def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
