@@ -317,6 +317,75 @@ class Image(object):
             return self.colvars(subdir=subdir, fields=fields).overlap_3D_units(other.colvars(subdir=subdir, fields=fields),
                                                                                indicator=indicator)
 
+    def overlap_commute_3D_units(self, other, subdir='colvars', centers='nodes'):  # TODO: refactor, get rid of the "3D" in the name
+        fields = list(set(self.fields) & set(other.fields))  # do this in controlled space
+        a_final = self.colvars(subdir=subdir, fields=fields)
+        a_init = self.colvars(subdir=subdir+'_init', fields=fields)
+        b_final = other.colvars(subdir=subdir, fields=fields)
+        b_init = other.colvars(subdir=subdir+'_init', fields=fields)
+        if centers == 'means':
+            cluster_centers = [a_final.mean, b_final.mean]
+        if centers == 'means_init':
+            cluster_centers = [a_init.mean, b_init.mean]
+        elif centers == 'nodes':
+            cluster_centers = [self.node, other.node]
+        else:
+            raise ValueError('centers must be one of "means", "nodes" or "means_init".')
+        ov = np.inf
+        for f in fields:
+            cluster_centers_flat = np.concatenate((cluster_centers[0][f], cluster_centers[1][f]))
+            assert cluster_centers_flat.shape[0] == 2 
+            assert cluster_centers_flat.ndim == 2
+            i_final = np.argmin(np.linalg.norm(a_final[f][:, np.newaxis, :] - cluster_centers_flat[np.newaxis, :, :], axis=2), axis=1)
+            i_init = np.argmin(np.linalg.norm(a_init[f][:, np.newaxis, :] - cluster_centers_flat[np.newaxis, :, :], axis=2), axis=1)
+            j_final = np.argmin(np.linalg.norm(b_final[f][:, np.newaxis, :] - cluster_centers_flat[np.newaxis, :, :], axis=2), axis=1)
+            j_init = np.argmin(np.linalg.norm(b_init[f][:, np.newaxis, :] - cluster_centers_flat[np.newaxis, :, :], axis=2), axis=1)
+            n = len(i_init) + len(j_init)
+            ## print('n', n, 'i_init.shape', i_init.shape, 'j_final.shape', j_final.shape)
+            assert len(i_init) == len(i_final)
+            assert len(j_init) == len(j_final)
+            T_ab = (np.count_nonzero(np.logical_and(i_init==0, i_final==1)) + np.count_nonzero(np.logical_and(j_init==0, j_final==1))) / n
+            T_ba = (np.count_nonzero(np.logical_and(i_init==1, i_final==0)) + np.count_nonzero(np.logical_and(j_init==1, j_final==0))) / n
+            assert 0.0 <= T_ab <= 1.0, T_ab
+            assert 0.0 <= T_ba <= 1.0, T_ba
+            ov = min(ov, min(T_ab, T_ba))
+        return ov
+
+    def overlap_commute_plane(self, other, subdir='colvars', centers='nodes'):
+        from .util import structured_to_flat
+        fields = list(set(self.fields) & set(other.fields))  # do this in controlled space
+        a_final = self.colvars(subdir=subdir, fields=fields).as2D(fields=fields)
+        a_init = self.colvars(subdir=subdir+'_init', fields=fields).as2D(fields=fields)
+        b_final = other.colvars(subdir=subdir, fields=fields).as2D(fields=fields)
+        b_init = other.colvars(subdir=subdir+'_init', fields=fields).as2D(fields=fields)
+        if centers == 'means':
+            cluster_centers = np.concatenate((
+                structured_to_flat(a_final.mean, fields=fields),
+                structured_to_flat(b_final.mean, fields=fields)))
+        if centers == 'means_init':
+            cluster_centers = np.concatenate((
+                structured_to_flat(a_init.mean, fields=fields),
+                structured_to_flat(b_init.mean, fields=fields)))
+        elif centers == 'nodes':
+            cluster_centers = np.concatenate((
+                structured_to_flat(self.node, fields=fields),
+                structured_to_flat(other.node, fields=fields)))
+        else:
+            raise ValueError('centers must be one of "means", "nodes" or "means_init".')
+        i_final = np.argmin(np.linalg.norm(a_final[:, np.newaxis, :] - cluster_centers[np.newaxis, :, :], axis=2), axis=1)
+        i_init = np.argmin(np.linalg.norm(a_init[:, np.newaxis, :] - cluster_centers[np.newaxis, :, :], axis=2), axis=1)
+        j_final = np.argmin(np.linalg.norm(b_final[:, np.newaxis, :] - cluster_centers[np.newaxis, :, :], axis=2), axis=1)
+        j_init = np.argmin(np.linalg.norm(b_init[:, np.newaxis, :] - cluster_centers[np.newaxis, :, :], axis=2), axis=1)
+        n = len(i_init) + len(j_init)
+        ## print('n', n, 'i_init.shape', i_init.shape, 'j_final.shape', j_final.shape)
+        assert len(i_init) == len(i_final)
+        assert len(j_init) == len(j_final)
+        T_ab = (np.count_nonzero(np.logical_and(i_init==0, i_final==1)) + np.count_nonzero(np.logical_and(j_init==0, j_final==1))) / n
+        T_ba = (np.count_nonzero(np.logical_and(i_init==1, i_final==0)) + np.count_nonzero(np.logical_and(j_init==1, j_final==0))) / n
+        assert 0.0 <= T_ab <= 1.0, T_ab
+        assert 0.0 <= T_ba <= 1.0, T_ba
+        return min(T_ab, T_ba)
+
     def x0(self, subdir='colvars', fields=All):  # TODO: have this as a Colvars object? but how?
         'Get the initial position for the simulation in colvar space.'
         #if subdir not in self._x0:

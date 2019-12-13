@@ -9,7 +9,7 @@ import tempfile
 from tqdm import tqdm
 from .util import *
 from .colvars import Colvars
-from .image import Image, load_image, interpolate_id
+from .image import Image, load_image
 from .queuing import *
 
 
@@ -380,6 +380,7 @@ class String(object):
         -----
         The group id of the new images is set to None.
         '''
+        from .image import interpolate_id
         if j is None:
             j += i + 1
         if isinstance(i, int):
@@ -822,12 +823,10 @@ class String(object):
                 fields[a] |= f  # for each image B, we might add fields to improve both overlaps each of A and C
                 fields[b] |= f  # A .. B .. C
                 if len(f) > 0:
-                    print('Added new field(s)', f, 'to images', i, 'and', i + 1)
-            # TODO: respect fixed
+                    print('Added new field(s)', f, 'to images', a.image_id, i, 'and', b.image_id, i + 1)
             new_nodes = [im.colvars(fields=list(fields[im])).mean for im in images_to_evolve]  # set new node to the old means
             del fields
         else:
-            # TODO: respect fixed
             new_nodes = [im.colvars(fields=im.fields).mean for im in images_to_evolve]
 
         # Compute the distance between neighbors and set spring constant accordingly, sigma=delta.
@@ -1024,6 +1023,7 @@ class String(object):
         '''
         from .colvars import overlap_svm
         from .util import recarray_dims, exactly_2d, dict_to_structured, IDEAL_GAS_CONSTANT_KCAL_MOL_K
+        from .image import interpolate_id
         RT = IDEAL_GAS_CONSTANT_KCAL_MOL_K * T  # kcal/mol
 
         x = a.colvars(subdir=subdir)  #  This is not necessarily the colvars subdir!
@@ -1057,7 +1057,7 @@ class String(object):
             #if adjust_springs:
             #    new_spring[field] = RT * np.linalg.norm(a_node_f - b_node_f)**-2.  # RMSD or not???
             #else:
-            # TODO: implement proper solution! (see manuscript)
+            # TODO: implement proper solution! (see manuscript!!!)
             new_spring[field] = 50.
         # now add the known fields
         for field in set(a.fields) & set(b.fields):
@@ -1100,21 +1100,20 @@ class String(object):
         subdirs: str or list of str
             List of subdirectory names in the observables directory.
         overlap: str  # TODO: allow to pass in a matrix and just use that?
-            One of 'units' or 'plane'. Determines type of overlap computation. 'units' finds dividing planes
-            for each atom (or more precisely: for each 3D unit) separately. 'plane' finds a plane in the full
-            product space of all observables.
+            One of 'units', 'plane' or 'commute'. Determines type of overlap computation. 'units' finds dividing
+            planes for each atom (or more precisely: for each scalar or vectorial colvar) separately. 
+            'plane' finds a plane in the full product space of all monitored colvars.
+            'commute' approximates the commute distance by cluserting along the string an
+            by computing a transition matrix from the swarm data.
         order: str
             One of 'sequential' or 'shortest'. How to search for bottlenecks. 'sequential' follows the canonical
             order of the string, i.e. only examines nodes that are direct neightbors according to the canconical
-            (arc length) indexing of the string. 'shortest' determines the min-bottleneck path from all possible
-            paths through the images.
+            (arc length) indexing of the string. (The same ordering as in `images_ordered`)
+            'shortest' determines the min-bottleneck path from all possible paths through the images.
         threshold:
             Pairs of images with overlap lower than this value are returned.
-        ignore_missing: bool
-            Ignore missing observable files; simply skip pairs that have missing files.
-        alpha: float
-            CURRENTLY NOT SUPPORTED, Parameter for definition of image distance for the computation of the optimal
-            image pair for interpolation.
+        # ignore_missing: bool
+        #     Ignore missing observable files; simply skip pairs that have missing files.
 
         Returns
         -------
@@ -1129,43 +1128,17 @@ class String(object):
         >>> s.write_yaml()
         >>> s.propagate()
         '''
-        from .util import recarray_difference, recarray_norm, widest_path
-        if overlap not in ['units', 'plane']:
-            raise NotImplementedError('Only overlap="units_3D" is currently implemented.')
-        pairs = []
-        if order == 'sequential':
-            for a, b in zip(self.images_ordered[0:-1], self.images_ordered[1:]):
-                try:
-                    if a.overlap_3D_units(b, subdir=subdirs, fields=fields) < threshold:
-                        pairs.append((a, b))
-                except FileNotFoundError as e:
-                    if ignore_missing:
-                        warnings.warn(str(e))
-                    else:
-                        raise
-            return pairs
-        elif order == 'shortest':
+        from .util import widest_path
+        if order == 'shortest':
             n = len(self)
-            print('computing the overlap matrix')
-            overlap_matrix = self.overlap(subdir=subdirs, fields=fields, algorithm=overlap, matrix=True)
-            #overlap_matrix = np.zeros((n, n)) + np.nan
-            #distance_matrix = np.array((n, n))
-            # find the overlaps for all pairs of nodes
-            #for i, a in enumerate(tqdm(self.images_ordered)):
-            #    overlap_matrix[i, i] = 0.
-            #    for j_excess, b in enumerate(self.images_ordered[i + 1:]):
-            #        j = i + 1 + j_excess
-            #        if overlap == 'units':
-            #            overlap_matrix[i, j] = a.overlap_3D_units(b, subdir=subdirs, fields=fields)
-            #        else:
-            #            overlap_matrix[i, j] = a.overlap_plane(b, subdir=subdirs, fields=fields)
-            #        overlap_matrix[j, i] = overlap_matrix[i, j]
-            #        #distance_matrix[i, j] = recarray_norm(recarray_difference(a.node, b.node), rmsd=True)
-            #        #distance_matrix[j, i] = distance_matrix[i, j]
-            #overlap_matrix[-1, -1] = 0.
-            # now find the min-bottleneck path
-            # TODO: play around with different score: e.g. 1/overlap_matrix as distance score
-            #weight_matrix = np.where(overlap_matrix > 0, 1. - overlap_matrix, 1. + alpha*distance_matrix)  # this might require a bit of experimentation
+            if isinstance(overlap, np.ndarray):
+                if overlap.ndim != 2 or overlap.shape[0] != n or overlap.shape[1] != n:
+                    raise ValueError('A matrix was passed as the \'overlap\' argument, but it\'s dimensions do not match the current string.')
+                else:
+                    overlap_matrix = overlap
+            else:    
+                print('computing the overlap matrix')                
+                overlap_matrix = self.overlap(subdir=subdirs, fields=fields, algorithm=overlap, matrix=True)
             print('finding the widest path')
             path = widest_path(overlap_matrix, regularize=True)
             print(' '.join([str(i) for i in path]))
@@ -1174,11 +1147,20 @@ class String(object):
             print('bottleneck has overlap:', min(overlap))
             im_o = self.images_ordered
             return [(im_o[i], im_o[j]) for ov, (i, j) in zip(overlap, pairs) if ov < threshold]
+        elif order == 'sequential':
+            pairs = []
+            overlaps, image_seqs = self.overlap(subdir=subdirs, fields=fields, algorithm=overlap, matrix=False, return_ids=True)
+            pairs = []
+            for ov, seqs in zip(overlaps, image_seqs):
+                if ov < threshold:
+                    i, j = seqs
+                    pairs.append((self.images[i], self.images[j]))
+            return pairs
         else:
             raise ValueError('Unknown value of `order`. Must be one of "sequential" or "shortest".')
 
 
-    def overlap(self, subdir='colvars', fields=All, algorithm='units', indicator='max', matrix=False, return_ids=False, fallback_to_geometry=True, epsilon=None):
+    def overlap(self, subdir='colvars', fields=All, algorithm='units', matrix=False, return_ids=False, centers='nodes', fallback_to_geometry=True, epsilon=None):
         r'''Compute the overlap (SVM) between images of the string.
 
         Paramters
@@ -1186,16 +1168,33 @@ class String(object):
         fields: list or All
             Fields in monitored space to use for overlap computation.
 
+        algorithm: str
+            One of 'units', 'plane', 'commute_units' or 'commute_plane'.
+            Determines type of overlap computation. 
+            'units' finds dividing planes for each atom (or more precisely: for each scalar
+            or vectorial colvar) separately. 
+            'plane' finds a plane in the full product space of all monitored colvars.
+            'commute_*' approximates the commute overlap by counting transtions in
+            the swarm data across a plane defined by pairs of nodes or means.
+
+        centers: str
+            One of 'nodes', 'means' or 'means_init'. Only used for the commute-type
+            algorithms ('commute_plane', 'commute_units'). Specifies what to use
+            as the opposing points to define the hyperplane.
+
         Notes
         -----
         Order of images in the retuned array/ matrix is the same as in self.images_ordered.
         '''
         from tqdm import tqdm
         from .util import recarray_difference, recarray_norm
+        if algorithm not in ['plane', 'units', 'commute_plane', 'commute_units']:
+            raise ValueError('algorithm must be one of \'plane\', \'units\', \'commute_plane\', or \'commute_units\'.')
         #if not self.is_homogeneous:
         #    raise RuntimeError('Controlled collective variable space must be indentical for all images in string. Please use Image.get_fields_non_overlapping instead.')
-        real_fields = self.images_ordered[0].colvars(subdir=subdir, fields=fields).fields  # monitored space
+        real_fields = self.images_ordered[0].colvars(subdir=subdir, fields=fields).fields  # monitored space TODO: rethink if we should even allow the user to select fields here!
         ids = []
+        indicator = 'max'
         if epsilon is None:  # set epsilon to 1/(swarm size)
             epsilon = 1.0 / len(self.images_ordered[0].colvars(subdir=subdir, fields=fields))
         if not matrix:
@@ -1204,8 +1203,12 @@ class String(object):
                 try:
                     if algorithm=='plane':
                         ov = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
-                    else:
+                    elif algorithm=='units':
                         ov = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                    elif algorithm == 'commute_plane':
+                        ov = a.overlap_commute_plane(b, subdir=subdir, centers=centers)
+                    elif algorithm == 'commute_units':
+                        ov = a.overlap_commute_3D_units(b, subdir=subdir, centers=centers)
                     if ov < epsilon and fallback_to_geometry:
                         common_fields = list(set(a.fields) & set(b.fields))  # these are in controlled space!
                         x = a.colvars(subdir=subdir, fields=common_fields).mean
@@ -1230,8 +1233,12 @@ class String(object):
                     try:
                         if algorithm == 'plane':
                             ov = a.overlap_plane(b, subdir=subdir, fields=real_fields, indicator=indicator)
-                        else:
+                        elif algorithm == 'units':
                             ov = a.overlap_3D_units(b, subdir=subdir, fields=real_fields, indicator=indicator)
+                        elif algorithm == 'commute_plane':
+                            ov = a.overlap_commute_plane(b, subdir=subdir, centers=centers)
+                        elif algorithm == 'commute_units':
+                            ov = a.overlap_commute_3D_units(b, subdir=subdir, centers=centers)
                         if ov < epsilon and fallback_to_geometry:
                             common_fields = list(set(a.fields) & set(b.fields))  # these are in controlled space!
                             x = a.colvars(subdir=subdir, fields=common_fields).mean
@@ -1363,7 +1370,6 @@ class String(object):
         ----
         Forces are always projected on the string.
         '''
-        # RT = * T  # kcal/mol
         forces = []
         fields = self.images_ordered[0].fields
         support_points = [structured_to_flat(image.node, fields=fields)[0, :] for image in self.images_ordered]
@@ -1512,23 +1518,6 @@ class String(object):
         return mbar, xaxis
 
 
-    #@staticmethod
-    #def overlap_gaps(matrix, threshold=0.99):
-    #    'Indentify the major gaps in the (thermodynamic) overlap matrix'
-    #    import msmtools
-    #    n = matrix.shape[0]
-    #    if matrix.shape[1] != n:
-    #        raise ValueError('matrix must be square')
-    #    di = np.diag_indices(n)
-    #    matrix = matrix.copy()
-    #    matrix[di] = 0
-    #    c = matrix.sum(axis=1)
-    #    matrix[di] = c
-    #    T = matrix / (2 * c[:, np.newaxis])
-    #    m = np.count_nonzero(msmtools.analysis.eigenvalues(T) > threshold)
-    #    return msmtools.analysis.pcca(T, m)
-
-
     def displacement(self, subdir='colvars', fields=All, norm='rmsd', origin='node'):
         'Compute displacement vector in collective variable space for each image.'
         drift = {}
@@ -1656,7 +1645,6 @@ class String(object):
             raise ValueError('centers must be one of "means", "nodes" or an array')
 
         s_images = []
-        # TODO: test me!!!
         for im in self.images_ordered:
             frames = im.colvars(subdir=subdir, fields=fields).as2D(fields=fields)
             #print('frames.shape', frames.shape)
@@ -1664,14 +1652,10 @@ class String(object):
             dmat = np.linalg.norm(frames[:, np.newaxis, :] - cluster_centers[np.newaxis, :, :], axis=2)
             idx = np.argmin(dmat, axis=1)
             s_images.append(idx)
-        #s_images = self.arclength_projections(subdir=subdir, x0=False, order=order,
-        #                                      curve_defining_string=curve_defining_string, where=clusters,
-        #                                      defining_subdir=defining_subdir)
-        #s_images = np.maximum(s_images, 0.)
         return s_images
 
 
-    def count_matrix(self, f=1.0, subdir='colvars', subdir_init='colvars_init', fields=All, centers='means', return_t=False):
+    def count_matrix(self, subdir='colvars', subdir_init='colvars_init', fields=All, centers='means', return_t=False):
         r'''Estimate MSM from swarm of trajectories data
 
             Parameters
@@ -1703,20 +1687,9 @@ class String(object):
                 Reversible transition matrix estimated from the count matrix.
         '''
         import msmtools
-        #from tqdm import tqdm_notebook as tqdm
         dtrajs = []
-        #if subdir_init is None:
-        #    s_starts_images = np.maximum(self.arclength_projections(x0=True), 0.)
-        #else:
         s_starts_images = self.microstate_assignments(subdir=subdir_init, fields=fields, centers=centers)
-        #s_starts_images = self.arclength_projections(subdir=subdir_init, x0=False, order=order,
-        #                                             curve_defining_string=curve_defining_string, where=clusters,
-        #                                             defining_subdir=defining_subdir)
-        #s_starts_images = np.maximum(s_starts_images, 0.)
         s_ends_images = self.microstate_assignments(subdir=subdir, fields=fields, centers=centers)
-        #s_ends_images = self.arclength_projections(x0=False, order=order, curve_defining_string=curve_defining_string,
-        #                                           where=clusters, defining_subdir=defining_subdir)
-        #s_ends_images = np.maximum(s_ends_images, 0.)
         if len(s_starts_images) != len(s_ends_images):
             raise RuntimeError(
                 'Internal inconsistency of swarm data. Number of images in initial points and final points is different.')
@@ -1725,7 +1698,7 @@ class String(object):
                 raise RuntimeError(
                     'Internal inconsistency of swarm data. Swarm size is different in initial points and final points.')
             for s_start, s_end in zip(s_starts, s_ends):
-                dtrajs.append([int(round(s_start*f)), int(round(s_end*f))])
+                dtrajs.append([s_start, s_end])
         c = msmtools.estimation.cmatrix(dtrajs, lag=1)
         if return_t:
             t = msmtools.estimation.tmatrix(c)
