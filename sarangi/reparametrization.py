@@ -113,7 +113,7 @@ def compute_equidistant_nodes_2(old_nodes, d, direction=-1, d_skip=None, do_warn
     return np.concatenate((res, [nodes[-1, :]]))
 
 
-def reorder_nodes(nodes):
+def reorder_nodes(nodes, return_indices=False):
     'Reorder the nodes in the list given in the argument. nodes[0] and nodes[-1] are guaranteed to be unchanged.'
     nodes = np.array(nodes)
     if nodes.ndim != 2:
@@ -124,6 +124,7 @@ def reorder_nodes(nodes):
     available = np.arange(1, len(nodes))
     x = nodes[0]
     res = [x]
+    order = [0]
     end = False
     while not end:
         index_in_available = np.argmin(np.linalg.norm(nodes[available, :] - x[np.newaxis, :], axis=1))
@@ -132,6 +133,7 @@ def reorder_nodes(nodes):
         #print(available)
         x = nodes[index]
         res.append(x)
+        order.append(index)
         if index == last:
             end = True
 
@@ -140,7 +142,10 @@ def reorder_nodes(nodes):
             'String became shorter on reordering, looks like we deleted one (or more) meander(s) '
             'consisting of nodes ' + ', '.join([str(i) for i in available]) + '.', RuntimeWarning)
 
-    return res
+    if return_indices:
+        return res, order
+    else:
+        return res
 
 
 def curvatures(nodes):
