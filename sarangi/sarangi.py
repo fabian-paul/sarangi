@@ -1165,9 +1165,13 @@ class String(object):
 
         Paramters
         ---------
-        fields: list or All
-            Fields in monitored space to use for overlap computation.
+        subdir: str
+            Subdirectory of the observables directory with 
 
+        fields: list or All
+            Fields in monitored space to use for overlap computation. 
+            Default is all fields in `subdir`.
+    
         algorithm: str
             One of 'units', 'plane', 'commute_units' or 'commute_plane'.
             Determines type of overlap computation. 
@@ -1176,11 +1180,33 @@ class String(object):
             'plane' finds a plane in the full product space of all monitored colvars.
             'commute_*' approximates the commute overlap by counting transtions in
             the swarm data across a plane defined by pairs of nodes or means.
+            See also the `centers` parameter for configuring the commute-type
+            overlap computation.
+
+        matrix: bool
+            If true, compute the overlap of every image in the string with
+            every other images (useful for reordering images or optimal
+            interpolation). If false, only compute overlap between direct
+            neighbots according to the canonical ordering of images in the
+            string.
+
+        return_ids: bool
+            Only effecitve of matrix=False. If true, return as the second
+            element a list of the same length as the list of overlaps.
+            Each element of that list is a tuple with the canonical
+            sequence identifiers of the two images for which the overlap
+            was computed.
 
         centers: str
             One of 'nodes', 'means' or 'means_init'. Only used for the commute-type
             algorithms ('commute_plane', 'commute_units'). Specifies what to use
             as the opposing points to define the hyperplane.
+
+        fallback_to_geometry: bool
+            If true, and the kinetic overlap or commute overlap is zero,
+            regularize the results with eps*exp(-d) where d is the geometric
+            distance between the swarm averages in controlled collective
+            variable space.
 
         Notes
         -----

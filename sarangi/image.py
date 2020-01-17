@@ -195,7 +195,7 @@ class Image(object):
 
     @property
     def base(self):
-        'Base path of the image. base+".dcd" is the path to the MD data.'
+        'Base path to the full data of image (fully solvated structures). base+".dcd" is the path to the MD data.'
         return '{root}/strings/{branch}_{iteration:03d}/{branch}_{iteration:03d}_{id_major:03d}_{id_minor:03d}'.format(
             root=root(), branch=self.branch, iteration=self.iteration, id_minor=self.id_minor, id_major=self.id_major)
 

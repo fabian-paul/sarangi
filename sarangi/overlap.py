@@ -5,34 +5,82 @@ from sarangi.util import exactly_2d
 __all__ = ['main_overlap', 'parse_args_overlap']
 
 
-def load_matrix(branch: str, iteration: int, subdir: str='colvars', reduction='min'):
+def load_matrix(branch: str, iteration: int, subdir: str='colvars', reduction='min', return_image_ids=False):
+    r'''Get the full overlap matrix of all images in the string.
+
+    Parameters
+    ----------
+    branch: str
+        branch name
+    iteration: int
+        interation number
+    subdir: str
+        subdirectory of overlap folder (usually corresponds to the subdir
+        of the name name in the observables folder)
+    reduction: str
+        Currently only 'min' is supported. Computes the minimum overlap
+        of all observables for each pair if images.
+    return_image_ids: bool
+        return list of image_id in addition of to the overlap matrix
+        Since this procedure loads precomputed data form disk, it is worth to
+        check this return value to test if the list is complete.
+
+    Return
+    ------
+    Depending on the value of return_image_ids:
+    * matrix
+    * matrix, image_id
+
+    Undefined elements of matrix are set to nan (if data was not found on disk).
+    '''
     import os
     import csv
     import numpy as np
     matrix = {}
+    seen_image_ids = set()
     folder_overlap = '{root}/overlap/{branch}_{iteration:03d}/{subdir}'.format(
         root=root(), branch=branch, iteration=int(iteration), subdir=subdir)
 
     for fname in os.listdir(folder_overlap):
+        if not fname.endswith('.csv'):
+            continue
         image_id_a = os.path.splitext(fname)[0]
+        seen_image_ids.add(image_id_a)
         with open(folder_overlap + '/' + fname) as f:
             reader = csv.reader(f, delimiter=',')
             headers = next(reader)
             data = list(reader)
         for line in data:
             image_id_b = line[0]
+            seen_image_ids.add(image_id_b)
             overlap = [float(x) for x in line[1:]]
             # TODO: should we support using no reductions, so that we return a tensor?
             if reduction == 'min':
-                matrix[(image_id_a, image_id_b)] = float(np.min(overlap))
+                matrix[(image_id_a, image_id_b)] = np.min(overlap)
             else:
                 raise RuntimeError('reduction not implemented')
 
-    symm_matrix = {}
-    for key, overlap in matrix.items():
-        symm_matrix[key] = overlap  # ???? WHAT????
-        symm_matrix[(key[1], key[0])] = overlap
-    return symm_matrix
+    # convert to numpy array
+    seen_image_ids = sorted(seen_image_ids)
+    n = len(seen_image_ids)
+    numpy_matrix = np.zeros((n, n)) + np.nan
+    for i, a in enumerate(seen_image_ids):
+        for j, b in enumerate(seen_image_ids):
+            if (a, b) in matrix:
+                numpy_matrix[i, j] = matrix[(a, b)]
+            elif (b, a) in matrix:
+                numpy_matrix[i, j] = matrix[(b, a)]
+            numpy_matrix[j, i] = numpy_matrix[i, j]
+    if return_image_ids:
+        return numpy_matrix, seen_image_ids
+    else:
+        return numpy_matrix
+    # TODO; have some numpy format...
+    #symm_matrix = {}
+    #for key, overlap in matrix.items():
+    #    symm_matrix[key] = overlap
+    #    symm_matrix[(key[1], key[0])] = overlap
+    #
 
 
 def load_tensor(branch: str, iteration: int, subdir: str='colvars'):

@@ -32,6 +32,7 @@ def compute_equidistant_nodes(old_nodes, d):
         -----
         New nodes are equidistant in the subspace formed by the polyline that goes through the old nodes.
         New nodes are not equidistant in Cartesian space.
+        Use compute_equidistant_nodes_2 to generate nodes equidistant in Cartesian space.
     '''
 
     pts = []
@@ -71,8 +72,24 @@ def next_at_distance(p, q, o, r, s0=0.):
 
 
 def find_intersecting_segment(nodes, o, d, i_edge0, s0, direction=-1):
-    'For all segments between nodes starting from nodes[i_edge0], find intersection with point at distance d from o.' \
-    'In first segment, arc length of intersecting point must be larger then s0. Return point and arc length'
+    r'''For all segments between nodes starting from nodes[i_edge0], find intersection with point at distance d from o.
+
+        Parameters
+        ----------
+        direction: int, default = -1
+           One of 1 or -1. Where to start searching for segments.
+           1 means to start searching towards the beginning of the list
+           of nodes (i.e. close to the last node that was added to the
+           reparametrized string being built).
+           -1 means to start searching at the last node. -1 makes faster
+           progress towards the terminal node, bypassing some detours.
+           This is in the spirit of a very simplified variant of dynamic
+           programming.
+
+        Notes
+        -----
+        In first segment, arc length of intersecting point must be larger then s0. Return point and arc length
+    '''
     st = direction
     # print('i_edge0', i_edge0)
     nodes = np.array(nodes)[i_edge0:, :]
