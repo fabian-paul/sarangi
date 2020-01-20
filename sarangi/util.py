@@ -348,14 +348,14 @@ def widest_path(matrix, start=0, stop=-1, regularize=False):
     import scipy.sparse.csgraph
     if matrix.shape[0] != matrix.shape[1]:
         raise ValueError('Matrix must be square.')
-    mst = -scipy.sparse.csgraph.minimum_spanning_tree(-matrix)
+    mst = -scipy.sparse.csgraph.minimum_spanning_tree(scipy.sparse.csr_matrix(-matrix))
     _, pred = scipy.sparse.csgraph.depth_first_order(mst, i_start=start, directed=False, return_predecessors=True)
     # convert list of predecessors to path
     stop = np.arange(matrix.shape[0])[stop]
     if pred[stop] == -9999:
         if regularize:
             epsilon = min(np.min(matrix[matrix > 0]), 1.E-12)
-            mst = -scipy.sparse.csgraph.minimum_spanning_tree(-(matrix + epsilon))
+            mst = -scipy.sparse.csgraph.minimum_spanning_tree(scipy.sparse.csr_matrix(-(matrix + epsilon)))
             _, pred = scipy.sparse.csgraph.depth_first_order(mst, i_start=start, directed=False,
                                                              return_predecessors=True)
         else:
