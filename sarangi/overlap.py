@@ -1,11 +1,11 @@
 from sarangi import root
 from sarangi.colvars import overlap_svm, Colvars
-from sarangi.util import exactly_2d
+from sarangi.util import exactly_2d, All
 
 __all__ = ['main_overlap', 'parse_args_overlap']
 
 
-def load_matrix(branch: str, iteration: int, subdir: str='colvars', reduction='min', return_image_ids=False):
+def load_matrix(branch: str, iteration: int, subdir: str='colvars', selection=All, reduction='min', return_image_ids=False):
     r'''Get the full overlap matrix of all images in the string.
 
     Parameters
@@ -17,6 +17,8 @@ def load_matrix(branch: str, iteration: int, subdir: str='colvars', reduction='m
     subdir: str
         subdirectory of overlap folder (usually corresponds to the subdir
         of the name name in the observables folder)
+    selection: list or All
+        only consider observables in selection
     reduction: str
         Currently only 'min' is supported. Computes the minimum overlap
         of all observables for each pair if images.
@@ -48,12 +50,14 @@ def load_matrix(branch: str, iteration: int, subdir: str='colvars', reduction='m
         seen_image_ids.add(image_id_a)
         with open(folder_overlap + '/' + fname) as f:
             reader = csv.reader(f, delimiter=',')
-            headers = next(reader)
+            header = next(reader)
             data = list(reader)
         for line in data:
             image_id_b = line[0]
             seen_image_ids.add(image_id_b)
-            overlap = [float(x) for x in line[1:]]
+            if len(header)!=len(line):
+                raise RuntimeError('Number of fields in file %s does not match header length.'%fname)
+            overlap = [float(x) for x, name in zip(line[1:], header[1:]) if name.strip() in selection]
             # TODO: should we support using no reductions, so that we return a tensor?
             if reduction == 'min':
                 matrix[(image_id_a, image_id_b)] = np.min(overlap)
@@ -64,6 +68,7 @@ def load_matrix(branch: str, iteration: int, subdir: str='colvars', reduction='m
     seen_image_ids = sorted(seen_image_ids)
     n = len(seen_image_ids)
     numpy_matrix = np.zeros((n, n)) + np.nan
+    numpy_matrix[np.diag_indices(n)] = 1.0
     for i, a in enumerate(seen_image_ids):
         for j, b in enumerate(seen_image_ids):
             if (a, b) in matrix:

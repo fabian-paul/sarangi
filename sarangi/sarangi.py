@@ -1160,6 +1160,48 @@ class String(object):
             raise ValueError('Unknown value of `order`. Must be one of "sequential" or "shortest".')
 
 
+    def goemetric_overlap_regularizer(self, subdir: str='colvars', epsilon: float=None):
+        r'''Computes a fake overlap matrix, that contains exp(-epsilon*RMSD(node_i, node_j))
+
+            Parameters
+            ----------
+            subdir: str
+                Subdirectory of the the observables directory, where
+                Should be usually left at its default value.
+            epsilon: float or None
+                prefactor of returned matrix
+                Passing None sets the prefactor to 1/(swarm size).
+
+            Returns
+            -------
+            np.ndarray((N, N)) where N is the number of images
+
+            Example
+            -------
+            O = s.overlap(fallback_to_geometry=False)
+            R = s.goemetric_overlap_regularizer()
+            OR = np.where(O==0, R, O)
+            sarangi.util.widest_path(OR)
+        '''
+        if epsilon is None:  # set epsilon to 1/(swarm size)
+            epsilon = 1.0 / len(self.images_ordered[0].colvars(subdir=subdir, fields=self.images_ordered[0].fields))
+        o = np.zeros((len(self.images_ordered), len(self.images_ordered))) + np.nan
+        for i, a in enumerate(tqdm(self.images_ordered[0:-1])):
+            o[i, i] = 0.0
+            for j, b in enumerate(self.images_ordered[i+1:]):
+                common_fields = list(set(a.fields) & set(b.fields))  # these are in controlled space!
+                x = a.colvars(subdir=subdir, fields=common_fields).mean
+                y = b.colvars(subdir=subdir, fields=common_fields).mean
+                assert set(y.dtype.names) == set(common_fields)
+                assert set(x.dtype.names) == set(common_fields)
+                mu = len(common_fields)**-0.5
+                ov = epsilon * np.exp(-mu * recarray_norm(recarray_difference(x, y)))
+                o[i, i + j + 1] = ov
+                o[i + j + 1, i] = ov
+        o[-1, -1] = 0.0
+        return o
+
+
     def overlap(self, subdir='colvars', fields=All, algorithm='units', matrix=False, return_ids=False, centers='nodes', fallback_to_geometry=True, epsilon=None):
         r'''Compute the overlap (SVM) between images of the string.
 
@@ -1169,9 +1211,9 @@ class String(object):
             Subdirectory of the observables directory with 
 
         fields: list or All
-            Fields in monitored space to use for overlap computation. 
+            Fields in monitored space to use for overlap computation.
             Default is all fields in `subdir`.
-    
+
         algorithm: str
             One of 'units', 'plane', 'commute_units' or 'commute_plane'.
             Determines type of overlap computation. 

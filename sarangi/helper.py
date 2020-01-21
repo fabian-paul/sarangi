@@ -15,7 +15,7 @@ def _compute_pathcv_parameters(fnames_pdbs, atom_indices):
     return np.mean(deltas)
 
 
-def export_to_path_metadynamics_abf(string, overlap_matrix=None, folder_out='metad_images', selection='not water', overlap_options=None):
+def export_to_path_collective_variable(string, overlap_matrix=None, folder_out='metad_images', selection='not water', overlap_options=None):
     r'''Generate a sequence of PDB files to be used with path metadynamics or path ABF.
 
     Parameters
@@ -41,8 +41,9 @@ def export_to_path_metadynamics_abf(string, overlap_matrix=None, folder_out='met
     Must be run on a machine that has access to structures
     '''
     import mdtraj
-    from sarangi.util import widest_path, mkdir
-    top = mdtraj.load_topology(sarangi.root() + '/setup/system.pdb')
+    from .util import widest_path, mkdir
+    from .sarangi import root
+    top = mdtraj.load_topology(root() + '/setup/system.pdb')
     atom_indices = top.select(selection)
     if overlap_matrix is None:
         overlap_options['matrix'] = True
@@ -51,13 +52,16 @@ def export_to_path_metadynamics_abf(string, overlap_matrix=None, folder_out='met
         if 'algorithm' not in overlap_options:
             overlap_options['algorithm'] = 'units'
         overlap_matrix = string.overlap(**overlap_options)
+    else:
+        if not overlap_matrix.shape[0] == overlap_matrix.shape[1] == len(string):
+            raise ValueError('Shape of user-specified matrix does not match number of images in the string.')
     p = widest_path(overlap_matrix, regularize=True)
     # TODO: interpolation options?
     mkdir(folder_out)
     fnames_pdb = []
     for i_running, i in enumerate(p):
-        md_data_path = s.images_ordered[i].previous_base + '.dcd'
-        step = s.images_ordered[i].previous_frame_number
+        md_data_path = string.images_ordered[i].previous_base + '.dcd'
+        step = string.images_ordered[i].previous_frame_number
         # im, step, _ = sarangi.sarangi.find_realization_in_string([string], s.images_ordered[i].node)
         # md_data_path = im.base + '.dcd'
         frame = mdtraj.load_frame(md_data_path, step, top=top, atom_indices=atom_indices)
